@@ -1,32 +1,47 @@
 #!/usr/bin/env python
 
-import os
-import numpy as np
+import argparse
+import collections
+import copy
 import itertools
-import requests
-from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.Chem import ChemicalFeatures
-from rdkit.Chem import rdchem
-from rdkit.Chem import rdMolDescriptors
-from rdkit import RDConfig
-from rdkit.Chem import Draw
-from rdkit.Chem.Draw import rdMolDraw2D
-import sys
-import re
 import math
+import os
+import random
+import re
+import sys
+from importlib.resources import files
+from operator import itemgetter
+from dataclasses import dataclass
+
+from numpy.typing import NDArray
+from typing import Any
+
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import requests
 import scipy
+from rdkit import Chem, RDConfig
+from rdkit.Chem import (
+    AllChem,
+    ChemicalFeatures,
+    Descriptors,
+    Draw,
+    rdchem,
+    rdMolDescriptors,
+    Mol
+)
+from rdkit.Chem.Draw import rdMolDraw2D
+from rdkit.Chem.MolStandardize import rdMolStandardize
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import floyd_warshall
 from scipy.spatial import ConvexHull, convex_hull_plot_2d
-import collections
-import random
-import matplotlib.pyplot as plt
-from operator import itemgetter
-import argparse
-from rdkit.Chem import Descriptors
-from rdkit.Chem.MolStandardize import rdMolStandardize
-import copy
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 delta_Gs = {
     0:{
         'standard':{
@@ -143,7 +158,7 @@ def Scale_Scores(A):
 def rank_nodes(A):
  
     scores = Scale_Scores(A)        
-    if args.v:print("",    
+    logger.debug("",    
                     "    Bead Centrality Scores: ",
                     "",    
                     "    ",scores,    
@@ -167,11 +182,11 @@ def rank_nodes(A):
         score_prev = score_i
     ties.append(sublist)
 
-    if args.v:print("")    
-    if args.v:print("    Bead Centrality Scores: ")
-    if args.v:print("")    
-    if args.v:print("    ",scores)    
-    if args.v:print("")    
+    logger.debug("")    
+    logger.debug("    Bead Centrality Scores: ")
+    logger.debug("")    
+    logger.debug("    ",scores)    
+    logger.debug("")    
     return scores,ties
 
 def lone_atom(ties,A,A_init,scores,ring_beads,matched_maps,comp,exclusion_list):
@@ -261,9 +276,8 @@ def spectral_grouping(ties,A,scores,ring_beads,comp,path_matrix,max_size,matched
     groups = []
 
     #Verbose
-    if args.v:
-        print("    Present Atom Groupings: ","\033[38;5;34m", comp,"\033[0;0m", "Numbered as Bead(s): ", "\033[38;5;128m", list(range(len(comp))), "\033[0;0m")
-        print("    Beads Grouped by Centrality Scores (Used for Assigning Order of Pairing): ","\033[38;5;128m",ties, "\033[0;0m")
+    logger.debug("    Present Atom Groupings: ","\033[38;5;34m", comp,"\033[0;0m", "Numbered as Bead(s): ", "\033[38;5;128m", list(range(len(comp))), "\033[0;0m")
+    logger.debug("    Beads Grouped by Centrality Scores (Used for Assigning Order of Pairing): ","\033[38;5;128m",ties, "\033[0;0m")
     
     # Loop through ranks and apply spectral mapping scheme
     for rank in ties:
@@ -391,8 +405,8 @@ def iteration(results,itr,A_init,w_init,ring_beads,path_matrix,matched_maps):
         w = get_weights(comp,w_init,path_matrix)
     A_weighted = include_weights(oldA,w)
     
-    if args.v: print("    Adjacency Matrix: Weights of each bead on the diagonals, bonds indicated by off diagonal matrix values")
-    if args.v: print('\t' + str(A_weighted).replace('\n', '\n\t'))
+    logger.debug("    Adjacency Matrix: Weights of each bead on the diagonals, bonds indicated by off diagonal matrix values")
+    logger.debug('\t' + str(A_weighted).replace('\n', '\n\t'))
    
     # Get new mapping scheme
     scores,ties = rank_nodes(A_weighted)
@@ -454,7 +468,7 @@ def group_rings(A,ring_atoms,matched_maps,moli):
                 test_bead = [match[x] for x in bead]
                 if not any(any(y in ngroup for ngroup in new_groups) for y in test_bead):
                     new_groups.append(test_bead)
-    if args.v:print("Ring Atom Groupings: ", "\033[38;5;34m",new_groups, "\033[0;0m")
+    logger.debug("Ring Atom Groupings: ", "\033[38;5;34m",new_groups, "\033[0;0m")
     #Get remaining unmapped atoms 
     unmapped = []
     for ring in ring_atoms:
@@ -463,19 +477,19 @@ def group_rings(A,ring_atoms,matched_maps,moli):
                 unmapped.append(a)
     #Mapping of unmapped fragments
     if unmapped:
-        if args.v:print(" ")
-        if args.v:print("Mapping Non-ring Atoms Via Speactral Mapping Algorithm: Note atoms renumbered from one for each branch which is mapped")
-        if args.v:print(" ")
+        logger.debug(" ")
+        logger.debug("Mapping Non-ring Atoms Via Speactral Mapping Algorithm: Note atoms renumbered from one for each branch which is mapped")
+        logger.debug(" ")
 
         #Split into continous fragments
         unm_smi = Chem.rdmolfiles.MolFragmentToSmiles(moli,unmapped,canonical=False)
         unm_smi = unm_smi.upper()
         unm_mol = Chem.MolFromSmiles(unm_smi)
         unmapped_frags = Chem.GetMolFrags(unm_mol)
-        if args.v:print("Unmapped fragments: ", "\033[38;5;34m", unmapped_frags, "\033[0;0m")
+        logger.debug("Unmapped fragments: ", "\033[38;5;34m", unmapped_frags, "\033[0;0m")
         for frag in unmapped_frags:
-            if args.v:print(    "Mapping Branch: ", "\033[38;5;34m", frag, "\033[0;0m")
-            if args.v:print(" ")
+            logger.debug(    "Mapping Branch: ", "\033[38;5;34m", frag, "\033[0;0m")
+            logger.debug(" ")
             #Do mapping for each continuous fragment
             indices = [unmapped[k] for k in frag]
 
@@ -644,7 +658,7 @@ def assign_atom_maps(mol_dict):
         atom.SetAtomMapNum(atom.GetIdx())
     return mol_dict
 
-def mapping(mol,ring_atoms,matched_maps,n_iter,mol_dict):
+def mapping(mol,ring_atoms,matched_maps,n_iter):
     #Initialise data structures
     #mol = Chem.MolFromSmiles(smiles)
     A_atom = np.asarray(Chem.GetAdjacencyMatrix(mol),dtype='f')
@@ -652,6 +666,7 @@ def mapping(mol,ring_atoms,matched_maps,n_iter,mol_dict):
     w_init = [0.5*atom.GetMass() for atom in mol.GetAtoms()] #0.5 to avoid magnitude of eigenmatrixes getting too large during spectral mapping but large enough to differenetiate O, C and N
     #w_init = [1.0 for atom in mol.GetAtoms()]
 
+    mol_dict = copy.deepcopy(mol)
     assign_atom_maps(mol_dict) #Assign atom maps to allow tracking of atom indicies between subfragments
     ring_beads,comp,A_init = group_rings(A_atom,ring_atoms,matched_maps,mol_dict)
     #w_init = get_weights(comp,w_init)
@@ -660,19 +675,19 @@ def mapping(mol,ring_atoms,matched_maps,n_iter,mol_dict):
     results = []
     for itr in range(n_iter):
         
-        if args.v:print(" ")
-        if args.v:print("Mapping Iteration:", itr)
-        if args.v:print(" ")
+        logger.debug(" ")
+        logger.debug("Mapping Iteration:", itr)
+        logger.debug(" ")
 
         #if args.v and results_dict:print(    "Mapping so far: ", "\033[38;5;34m", results_dict, "\033[0;0m")
-        #if args.v:print(" ")
+        #logger.debug(" ")
         
         results_dict,ring_beads,matched_maps = iteration(results,itr,A_init,w_init,ring_beads,path_matrix,matched_maps)
         results.append(results_dict)
-        if args.v:print("    New Atom Groupings: ","\033[38;5;34m",results_dict["comp"],"\033[0;0m")
-        if args.v:print(" ")
+        logger.debug("    New Atom Groupings: ","\033[38;5;34m",results_dict["comp"],"\033[0;0m")
+        logger.debug(" ")
 
-    if args.v:print('    Mapping Before Lone Atom Handling:',"\033[38;5;34m",results_dict['comp'],"\033[0;0m")
+    logger.debug('    Mapping Before Lone Atom Handling:',"\033[38;5;34m",results_dict['comp'],"\033[0;0m")
 
     # Get final mapping
     results_dict_final = postprocessing(results,ring_atoms,n_iter,A_init,w_init,path_matrix,matched_maps)
@@ -741,7 +756,7 @@ def get_smi(bead,mol):
 
     bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead)
 
-    if args.v: print("Bead Atoms and Smiles: ","\033[38;5;34m",bead,"\033[0;0m",bead_smi)
+    logger.debug("Bead Atoms and Smiles: ","\033[38;5;34m",bead,"\033[0;0m",bead_smi)
 
     #Work out aromaticity by looking for lowercase c and heteroatoms
     ring_size = 0
@@ -750,7 +765,7 @@ def get_smi(bead,mol):
     lc = string_lst = ['c','\\[nH\\]','(?<!\\[)n','o']
     lowerlist = re.findall(r"(?=("+'|'.join(string_lst)+r"))",bead_smi)
 
-    if args.v: print(f'lowerlist: {lowerlist}')
+    logger.debug(f'lowerlist: {lowerlist}')
     
     #Construct test rings for aromatic fragments
     if lowerlist:
@@ -772,17 +787,17 @@ def get_smi(bead,mol):
         #For three atoms + substituents, make a dimer
         elif len(lowerlist) == 3:
             split1 = bead_smi.split(''.join(lowerlist[:2]))
-            if args.v: print(f'split1: {split1}')
+            logger.debug(f'split1: {split1}')
             split2 = split1[1].split(lowerlist[2])
-            if args.v: print(f'split2: {split2}')
+            logger.debug(f'split2: {split2}')
             subs = [split1[0],split2[0],split2[1]]
-            if args.v: print(f'subs: {subs}')
+            logger.debug(f'subs: {subs}')
             for i in range(len(subs)):
                 if subs[i] != '' and subs[i][0] != '(':
                     subs[i] = '({})'.format(subs[i])
             try:
                 bead_smi = 'c1c{}{}{}{}{}{}c1'.format(lowerlist[0],subs[0],lowerlist[1],subs[1],lowerlist[2],subs[2])
-                if args.v: print(f'bead_smi: {bead_smi}')      
+                logger.debug(f'bead_smi: {bead_smi}')      
             except:
                 bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead,kekuleSmiles=True)
 
@@ -790,7 +805,7 @@ def get_smi(bead,mol):
             if not Chem.MolFromSmiles(bead_smi):
                 bead_smi = 'c1{}{}{}{}{}{}c1'.format(lowerlist[0],subs[0],lowerlist[1],subs[1],lowerlist[2],subs[2])
                 ring_size = 5
-            if args.v: print(f'bead_smi: {bead_smi}')
+            logger.debug(f'bead_smi: {bead_smi}')
 
     if not Chem.MolFromSmiles(bead_smi):
         bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead,kekuleSmiles=True)
@@ -803,10 +818,11 @@ def get_smi(bead,mol):
         
     return bead_smi,ring_size,frag_size
     
-def get_types(beads,mol,ring_beads,matched_maps):
+def get_types(beads,mol,ring_beads,matched_maps,matched_beads,A_cg,path_matrix,tune=False):
     #loops through beads and determines bead type
-    script_path = os.path.dirname(os.path.realpath(__file__))
-    DG_data = read_DG_data('{}/fragments-exp.dat'.format(script_path))
+    # script_path = os.path.dirname(os.path.realpath(__file__))
+    script_path = files("cg_param_m3.data") / "fragments-exp.dat"
+    DG_data = read_DG_data(script_path) # read_DG_data('{}/fragments-exp.dat'.format(script_path))
 
     bead_types = []
     charges = []
@@ -817,20 +833,20 @@ def get_types(beads,mol,ring_beads,matched_maps):
         charges.append(qbead)
         bead_smi,ring_size, frag_size = get_smi(bead,mol)
         all_smi.append(bead_smi)
-        bead_types.append(param_bead(beads,bead,bead_smi,ring_size,frag_size,any(i in ring for ring in ring_beads),qbead,i in h_donor,i in h_acceptor,DG_data,matched_maps))
+        bead_types.append(param_bead(beads,bead,bead_smi,ring_size,frag_size,any(i in ring for ring in ring_beads),qbead,i in h_donor,i in h_acceptor,DG_data,matched_maps,matched_beads,path_matrix))
     for i in all_smi:
         if 'F' in i:
-            bead_types=reassign_halogen_adjacent_charge_beads(bead_types,beads,all_smi)
+            bead_types=reassign_halogen_adjacent_charge_beads(bead_types,beads,all_smi,A_cg,ring_beads)
 
             break
     
     #Activate neighbour group tuning. Not integrated with charged beads!
-    if args.t:
-        bead_types = tune_model(beads,bead_types,all_smi)
+    if tune:
+        bead_types = tune_model(beads,bead_types,all_smi,A_cg,ring_beads)
     
     return bead_types,charges,all_smi,DG_data
 
-def reassign_halogen_adjacent_charge_beads(bead_types,beads,all_smi):
+def reassign_halogen_adjacent_charge_beads(bead_types,beads,all_smi,A_cg,ring_beads):
     #If >2 F atoms are in the bead adjacent to certain charge beads, change the assignment
         
     # Code to apply alternative halogenated charge bead assignments. Only verified for PFAS surfactants.
@@ -857,7 +873,7 @@ def reassign_halogen_adjacent_charge_beads(bead_types,beads,all_smi):
                                         bead_types[z]='SQ1p'
     return bead_types
 
-def tune_model(beads,bead_types,all_smi):
+def tune_model(beads,bead_types,all_smi,A_cg,ring_beads):
     #Gets pairs of beads for tuning by ordering beads by centrality and grouping bonded pairs 
     
     scores,ties = rank_nodes(A_cg)
@@ -925,7 +941,7 @@ def get_diffs(alogps,ring_size,frag_size,category,size):
 
     return diffs
 
-def param_bead(beads,bead,bead_smi,ring_size,frag_size,ring,qbead,don,acc,DG_data,matched_maps):
+def param_bead(beads,bead,bead_smi,ring_size,frag_size,ring,qbead,don,acc,DG_data,matched_maps,matched_beads,path_matrix):
     #Parametrises bead type
     #types = ['P6','P5','P4','P3','P2','P1','N6','N5','N4','N3','N2','N1','C6','C5','C4','C3','C2','C1']
 
@@ -1016,21 +1032,21 @@ def param_bead(beads,bead,bead_smi,ring_size,frag_size,ring,qbead,don,acc,DG_dat
 
 def get_alogps(bead_smi):
     #Gets ALOGPS value from server. If this fails for whatver reason, use Wildmann-Crippen
-    if args.v:print("Generating bead log Kow Values: ")
+    logger.debug("Generating bead log Kow Values: ")
     try:
-        if args.v:print("Accessing ALOGPS Webserver....: ")
+        logger.debug("Accessing ALOGPS Webserver....: ")
         alogps = requests.get('http://vcclab.org/web/alogps/calc?SMILES=' + bead_smi).text
     except:
-        if args.v:print("ALOGPS Server access failed")
+        logger.debug("ALOGPS Server access failed")
         logK = rdMolDescriptors.CalcCrippenDescriptors(Chem.MolFromSmiles(bead_smi))[0]
         print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
         return logK*5.74
     if 'error' not in alogps:
-        if args.v:print("ALOGPS Server access successful")
+        logger.debug("ALOGPS Server access successful")
         logK = float(alogps.split()[4])
     else:
         logK = rdMolDescriptors.CalcCrippenDescriptors(Chem.MolFromSmiles(bead_smi))[0]
-        if args.v:print("ALOGPS Server access failed")
+        logger.debug("ALOGPS Server access failed")
         print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
     
     return logK*5.74
@@ -1041,32 +1057,24 @@ def bead_coords(bead,conf):
     coords = np.array([0.0,0.0,0.0])
     total = 0.0
     
-    #Note COM does not include hydrogens in determination, COG does
-    if args.COM:
-        for atom in bead:
-            mass = mol.GetAtomWithIdx(atom).GetMass() 
-            coords += conf.GetAtomPosition(atom)*mass
-            total += mass
-    #COG default
-    else:
-        for atom in bead:
-            coords += conf.GetAtomPosition(atom)
-            total+=1
-            check=mol.GetAtomWithIdx(atom)
-            #Include H (Connectivity not included in beads matrix)
-            for hydrogen in check.GetNeighbors():
-                symbol=hydrogen.GetSymbol()
-                if symbol == 'H':
-                    coords += conf.GetAtomPosition(hydrogen.GetIdx())
-                    total +=1
+    for atom in bead:
+        coords += conf.GetAtomPosition(atom)
+        total+=1
+        check = conf.GetAtomWithIdx(atom)
+        #Include H (Connectivity not included in beads matrix)
+        for hydrogen in check.GetNeighbors():
+            symbol=hydrogen.GetSymbol()
+            if symbol == 'H':
+                coords += conf.GetAtomPosition(hydrogen.GetIdx())
+                total +=1
     coords /= (total*10.0)
 
     return coords
 
-def write_gro(mol_name,bead_types,coords0,gro_name,path_out='.'):
+def write_gro(mol_name,bead_types,coords0,gro_file):
     #write gro file
-    conf = mol.GetConformer(0)
-    with open(f'{path_out}/{gro_name}','w') as gro:
+    # conf = mol.GetConformer(0)
+    with open(gro_file,'w') as gro:
         gro.write('single molecule of {}\n'.format(mol_name))
         gro.write('{}\n'.format(len(bead_types)))
         i = 1
@@ -1245,7 +1253,6 @@ def ring_bonding(real,virtual,A_cg,dihedrals):
 
     return A_cg,dihedrals
         
-
 def get_masses(all_smi,A_cg,virtual):
     #Calculate mass of each fragment in amu
     m_H = 1.00727645209
@@ -1258,7 +1265,7 @@ def get_masses(all_smi,A_cg,virtual):
         masses.append(frag_mass-excess_mass)
     
     
-    if args.v:print("Fragment Masses: ",masses)
+    logger.debug("Fragment Masses: ",masses)
 
 
     #Redistribute virtual masses
@@ -1268,25 +1275,69 @@ def get_masses(all_smi,A_cg,virtual):
         for rsite,weight in refs.items():
             masses[rsite] += weight*vmass
 
-    if args.v:print("Masses: post redistribution of virtual site mass",masses)
+    logger.debug("Masses: post redistribution of virtual site mass",masses)
     return masses
-            
 
-def write_itp(mol_name,bead_types,coords0,charges,all_smi,A_cg,itp_name,
-              path_out='.'):
+def write_itp(
+        mol_name,
+        bead_types,
+        ring_beads,
+        coords0,
+        charges,
+        all_smi,
+        A_cg,
+        itp_file,
+        mol,
+        beads,
+        nconfs
+    ):
     #writes gromacs topology file
-    with open(f'{path_out}/{itp_name}','w') as itp:
+    with open(itp_file,'w') as itp:
         itp.write('[moleculetype]\n')
         itp.write('MOL    2\n')
-        virtual,real = write_atoms(itp,A_cg,mol_name,bead_types,charges,all_smi,coords0,ring_beads)
-        bonds,constraints,dihedrals = write_bonds(itp,A_cg,ring_beads,real,virtual)
-        angles = write_angles(itp,bonds,constraints)
+        itp, virtual, real = write_atoms(
+            itp,
+            A_cg,
+            mol_name,
+            bead_types,
+            charges,
+            all_smi,
+            coords0,
+            ring_beads
+        )
+        itp, bonds, constraints, dihedrals = write_bonds(
+            itp,
+            A_cg,
+            ring_beads,
+            real,
+            virtual,
+            mol,
+            beads,
+            nconfs
+        )
+        itp, angles = write_angles(
+            itp,
+            bonds,
+            constraints,
+            mol,
+            beads,
+            nconfs
+        )
         if dihedrals:
-            write_dihedrals(itp,dihedrals,coords0)
+            itp = write_dihedrals(itp, dihedrals, coords0)
         if virtual:
-            write_virtual_sites(itp,virtual)
+            itp = write_virtual_sites(itp, virtual, beads)
 
-def write_atoms(itp,A_cg,mol_name,bead_types,charges,all_smi,coords,ring_beads):
+def write_atoms(
+        itp,
+        A_cg,
+        mol_name,
+        bead_types,
+        charges,
+        all_smi,
+        coords,
+        ring_beads
+    ):
     #Writes [atoms] block in itp file
 
     real = []
@@ -1304,9 +1355,9 @@ def write_atoms(itp,A_cg,mol_name,bead_types,charges,all_smi,coords,ring_beads):
     for b in range(len(bead_types)):
         itp.write('{:5d}{:>5}{:5d}{:>5}{:>5}{:5d}{:>10.3f}{:>10.3f};{}\n'.format(b+1,bead_types[b],1,'LIG','CG'+str(b+1),b+1,charges[b],masses[b],all_smi[b]))
 
-    return virtual,real
+    return itp, virtual, real
     
-def write_bonds(itp,A_cg,ring_atoms,real,virtual):
+def write_bonds(itp,A_cg,ring_atoms,real,virtual,mol,beads,nconfs):
     #Writes [bonds] and [constraints] blocks in itp file
     #Construct bonded structures for ring systems, including dihedrals   
     dihedrals = []
@@ -1353,9 +1404,9 @@ def write_bonds(itp,A_cg,ring_atoms,real,virtual):
             itp.write('{:5d}{:3d}{:5d}{:10.3f}\n'.format(con[0]+1,con[1]+1,1,r))
         itp.write('#endif\n')
 
-    return bonds,constraints,dihedrals
+    return itp, bonds, constraints, dihedrals
 
-def write_angles(itp,bonds,constraints):
+def write_angles(itp, bonds, constraints, mol, beads, nconfs):
     #Writes [angles] block in itp file
     k = 25.0
 
@@ -1390,7 +1441,7 @@ def write_angles(itp,bonds,constraints):
 
         for a,t in zip(angles,thetas):
             itp.write('{:5d}{:3d}{:3d}{:5d}{:10.3f}{:10.1f}\n'.format(a[0]+1,a[1]+1,a[2]+1,2,t,k))
-
+    return itp, angles
 
 def write_dihedrals(itp,dihedrals,coords0):
     #Writes hinge dihedrals to itp file 
@@ -1411,8 +1462,9 @@ def write_dihedrals(itp,dihedrals,coords0):
         cross2 = cross2/np.linalg.norm(cross2)
         angle = np.arccos(np.dot(cross1,cross2))*180.0/np.pi
         itp.write('{:5d}{:3d}{:3d}{:3d}{:5d}{:10.3f}{:10.1f}\n'.format(dih[0]+1,dih[1]+1,dih[2]+1,dih[3]+1,2,angle,k))
+    return itp
 
-def write_virtual_sites(itp,virtual_sites):
+def write_virtual_sites(itp, virtual_sites, beads):
     #Write [virtual_sites] block to itp file
     itp.write('\n[virtual_sitesn]\n')
     
@@ -1437,51 +1489,39 @@ def write_virtual_sites(itp,virtual_sites):
                 excl += ' '+str(i+1)
         done.append(vs)
         itp.write('{}\n'.format(excl))
+    return itp
 
-def get_coords(mol,beads):
-    #Calculates coordinates for output gro file
-    mol_Hs = Chem.AddHs(mol)
-    conf = mol_Hs.GetConformer(0)
+def get_coords(mol_h,beads):
+    """ Calculates coordinates for output gro file. """
+
+    conf = mol_h.GetConformer(0)
 
     cg_coords = []
 
-    if args.COM:
-        for bead in beads:
-            coord = np.array([0.0,0.0,0.0])
-            total = 0.0
-            for atom in bead:
-                mass = mol.GetAtomWithIdx(atom).GetMass()
-                coord += conf.GetAtomPosition(atom)*mass
-                total += mass
-            coord /= (total*10.0)
-            cg_coords.append(coord)
-
-
-    else:
-        #COG Default
-        for bead in beads:
-            coord = np.array([0.0,0.0,0.0])
-            total = 0.0
-            for atom in bead:
-                coord += conf.GetAtomPosition(atom)
-                total += 1
-                
-                #Include hydrogen in cg coordinate assignment
-                check=mol_Hs.GetAtomWithIdx(atom)
-                for hydrogen in check.GetNeighbors():
-                    symbol=hydrogen.GetSymbol()
-                    if symbol == 'H':
-                        #print("Hydrogen: ",hydrogen, conf.GetAtomPosition(hydrogen.GetIdx()))
-                        coord += conf.GetAtomPosition(hydrogen.GetIdx())
-                        total += 1
-            coord /= (total*10)
-            cg_coords.append(coord)
+    for bead in beads:
+        coord = np.array([0.0,0.0,0.0])
+        total = 0.0
+        for atom in bead:
+            coord += conf.GetAtomPosition(atom)
+            total += 1
+            
+            #Include hydrogen in cg coordinate assignment
+            check=mol_h.GetAtomWithIdx(atom)
+            for hydrogen in check.GetNeighbors():
+                symbol=hydrogen.GetSymbol()
+                if symbol == 'H':
+                    #print("Hydrogen: ",hydrogen, conf.GetAtomPosition(hydrogen.GetIdx()))
+                    coord += conf.GetAtomPosition(hydrogen.GetIdx())
+                    total += 1
+        coord /= (total*10)
+        cg_coords.append(coord)
 
     cg_coords_a = np.array(cg_coords)
     return cg_coords_a
 
 def get_smarts_matches(mol):
-    #Get matches to SMARTS strings
+    """ Get matches to SMARTS strings. """
+
     smarts_strings = {
     'S([O-])(=O)(=O)O'  :    'Q2',
     '[S;!$(*OC)]([O-])(=O)(=O)'   :    'Q3',# Reparameterised to Q3 from SQ4. Q1p for polyfluorinated
@@ -1509,7 +1549,7 @@ def get_smarts_matches(mol):
             #Generate temp adjacency matrix
             A_atom = np.asarray(Chem.GetAdjacencyMatrix(mol),dtype='f')
             #Check matched row for bonded groups. Discard those within the matched group and identify if lone atoms are created
-            bonded_groups=[]
+            # bonded_groups=[]
             already_matched.append(match)
             lone=False            
             for row in match:
@@ -1523,20 +1563,19 @@ def get_smarts_matches(mol):
                             for y in already_matched:
                                 if x in y:
                                     matched=True
-                            if adj!=0 and matched==False:
+                            if adj!=0 and not matched:
                                 count+=1
                         if count ==0:
                             print("Matched Map leaves lone atom: Number",i, "Discarding")
                             lone=True
                             continue                        
             #If no lone atom is created, allow mapping. On first iteration, loop will allow mappings that might prevent furhter mappings of neighbouring functional groups, be aware!
-            if lone==False:
-                if args.v: print("Hard Coded fragement recognised: ", smarts)
+            if not lone:
+                logger.debug("Hard Coded fragement recognised: ", smarts)
                 matched_maps.append(list(match))
                 matched_beads.append(smarts_strings[smarts])
                 already_matched.append(match)
     return matched_maps,matched_beads
-
 
 def tune_bead(var_bead,var_type,fix_bead,fix_type):
     dimer_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,fix_bead+var_bead)
@@ -1567,130 +1606,148 @@ def tune_bead(var_bead,var_type,fix_bead,fix_type):
 
     return var_type
 
-def molecule_image(mol):
+# def molecule_image(mol):
 
-    #Output 2D image of molecule with atom indexes labeled: Atom 0 unlabelled
-    canvas_width_pixels = 500
-    canvas_height_pixels  = 500
+#     #Output 2D image of molecule with atom indexes labeled: Atom 0 unlabelled
+#     canvas_width_pixels = 500
+#     canvas_height_pixels  = 500
    
-    mol_draw = rdMolDraw2D.PrepareMolForDrawing(mol)
+#     mol_draw = rdMolDraw2D.PrepareMolForDrawing(mol)
 
-    mol_draw = Chem.RemoveHs(mol)
-    for atom in mol_draw.GetAtoms():
-        atom.SetAtomMapNum(atom.GetIdx())
+#     mol_draw = Chem.RemoveHs(mol)
+#     for atom in mol_draw.GetAtoms():
+#         atom.SetAtomMapNum(atom.GetIdx())
     
-    drawer = rdMolDraw2D.MolDraw2DSVG(canvas_width_pixels,canvas_height_pixels)
-    drawer.DrawMolecule(mol_draw)
-    drawer.FinishDrawing()
-    svg = drawer.GetDrawingText()
-    with open('output.svg', 'w') as f:
-        f.write(svg)
+#     drawer = rdMolDraw2D.MolDraw2DSVG(canvas_width_pixels,canvas_height_pixels)
+#     drawer.DrawMolecule(mol_draw)
+#     drawer.FinishDrawing()
+#     svg = drawer.GetDrawingText()
+#     with open('output.svg', 'w') as f:
+#         f.write(svg)
 
-#Parse System Arguments and Provide useful outputs. Code starts below
-parser = argparse.ArgumentParser(description='Script to generate a coarse grained itp and gro files from a SMILES code')
-parser.add_argument('-s',help='SMILES code of the molecule.',required=False)
-parser.add_argument('-f',help='Name of molecule: name for output gro and itp files',required=True)
-parser.add_argument('-v',help='Verbose Mode: Output useful print statements throughout mapping and parameterisation.',action='store_true')
-parser.add_argument('-t',help='Tuning: Setting to enable tuned bead parameterisation. This uses the log Kow of neighbouring beads as well as the log Kow of the bead in question when parameterising a bead. Developed focusing on diesters, for an upcoming publication.',action='store_true')
-parser.add_argument('-COM',help='Option to reuse old COM mapping of beads. COG mapping default, no option required. COM not advised by Martini Developers!',action='store_true')
-parser.add_argument('-p',help='Have RDKIT output an index-labeled image of your molecule.',action='store_true')
-parser.add_argument('--file',help='Sdf input file. Overrides -s.',nargs='?',type=str)
-parser.add_argument('--path_out',help='Output folder.',nargs='?',type=str,default='.')
-# parser.add_argument('--optimize',help='Add hydrogens and optimize structure.',nargs='?',default=False,type=bool)
-args = parser.parse_args()
+    # return {
+    #     "adjacency": A_cg,
+    #     "beads": beads,
+    #     "ring_beads": ring_beads,
+    #     "path_matrix": path_matrix,
+    # }
 
-#Start of script introduction
-print("")
-print("Thanks for using cg_kmw. Latest version: https://github.com/cgkmw-durham/cg_param_m3")
-print("")
-print("The original version of this script for the Martini 2 forcefield, and a full description of the mapping and") 
-print("parametrisation procedures, can be found in the following paper:")
-print("T.D. Potter, E.L. Barrett and M.A. Miller, Automated Coarse-Grained Mapping Algorithm for the Martini Force Field and") 
-print("Benchmarks for Membrane–Water Partitioning, J. Chem. Theory Comput., 2021, https://doi.org/10.1021/acs.jctc.1c00322.")
-print("")
-if args.v: print("Colour coding of dumped arrays: ", "\033[38;5;34m","Atoms ","\033[0;0m", "Vs ", "\033[38;5;128m","Beads","\033[0;0m")
-if args.v: print("Atoms Numbered According to smiles, bead mapping is arbitrary")
+@dataclass
+class CGParam:
+    """ Main CGParam class. """
 
-if args.file:
-    optimize = False
-    with Chem.SDMolSupplier(args.file) as suppl:
-        ms = [x for x in suppl if x is not None]
-        mol = ms[0]
-        smi = Chem.MolToSmiles(mol,canonical=False)
-else:
-    optimize = True
-    if not args.s:
-        raise FileNotFoundError('Found neither input file nor SMILES string provided')
-    else:
-        smi = args.s
-        print(smi)
-        mol = Chem.MolFromSmiles(smi)
+    name: str
+    mol: Mol
+    n_iter: int = 3
+    tune: bool = False
+    path_out: Path = Path('output')
 
-print(f'Optimize: {optimize}')
+    def run_pipeline(self):
+        """ Run full cg_param pipeline. """
 
-print('='*50)
-print(f'NAME: {args.f}')
+        self.run_mapping()
+        self.run_parameterisation()
+        self.calc_coordinates()
+        self.write_output()
 
-print(mol)
+        # bead_types, charges, all_smi, DG_data = run_parameterisation(beads, mol, ring_beads, matched_maps, tune=False)
+        # coords0 = (mol, beads)
 
-print(f'n_atoms: {mol.GetNumAtoms()}')
-print("SMILES: ",smi)
-mol_dict = copy.deepcopy(mol) #Create second mol object to allow atom mapping; this allows tracking of atoms when assessing molecular fragments
-if args.p:molecule_image(mol)
-mol_name = args.f
+        # write_output()
 
-#Coarse-grained mapping
-print("Performing CG Mapping:")
-matched_maps,matched_beads = get_smarts_matches(mol)
-ring_atoms = get_ring_atoms(mol)
+    def run_mapping(self):
+        """ Coarse-grained mapping. """
 
-if args.v: print("Ring Atoms if any: ", "\033[38;5;34m", ring_atoms, "\033[0;0m")
-A_cg,beads,ring_beads,path_matrix = mapping(mol,ring_atoms,matched_maps,3,mol_dict)
+        logger.debug("Performing CG Mapping:")
+        matched_maps, matched_beads = get_smarts_matches(self.mol)
 
-non_ring = [b for b in range(len(beads)) if not any(b in ring for ring in ring_beads)]
+        self.matched_maps = matched_maps
+        self.matched_beads = matched_beads
 
-if args.v: print("")
-if args.v: print("Final Mapping: ", "\033[38;5;34m",beads,"\033[0;0m")
-if args.v: print("")
+        ring_atoms = get_ring_atoms(self.mol)
 
-#Parametrise beads
-print("Performing CG Parameterisation:")
+        logger.debug("Ring Atoms if any: ", "\033[38;5;34m", ring_atoms, "\033[0;0m")
 
-if args.t: print("Atom tuning is active: beads will be reassessed based on adjacent groups log Kow, rather then just their own fragments log Kow")
-if args.t: print("")
+        self.adjacency, self.beads, self.ring_beads, self.path_matrix = mapping(
+            self.mol,
+            ring_atoms,
+            self.matched_maps,
+            self.n_iter
+        )
 
-bead_types,charges,all_smi,DG_data = get_types(beads,mol,ring_beads,matched_maps)
+        logger.debug("Beads:", self.beads)
+        logger.debug("Adjacency matrix:\n", self.adjacency)
 
-if args.v: print("Bead Types: ", bead_types)
-if args.v: print("Bead Charges: ", charges)
+        self.non_ring = [b for b in range(len(self.beads)) if not any(b in ring for ring in self.ring_beads)]
 
-#Generate atomistic conformers
-if args.v: print("")
-print("Generating Atomistic Conformers:")
-if args.v: print("")
-# nconfs = 200
-if optimize:
-    print('Adding hydrogens and optimizing structure.')
-    nconfs = 200
-    mol = Chem.AddHs(mol)
-    AllChem.EmbedMultipleConfs(mol,numConfs=nconfs,randomSeed=random.randint(1,1000),useRandomCoords=True)
-    AllChem.UFFOptimizeMoleculeConfs(mol)
-    print(f'n_atoms with hydrogens: {mol.GetNumAtoms()}')
-else:
-    nconfs = 1
-    with Chem.SDMolSupplier(args.file,removeHs=False) as suppl:
-            ms = [x for x in suppl if x is not None]
-            mol = ms[0]
-            print(f'n_atoms with hydrogens: {mol.GetNumAtoms()}')
+        logger.debug("")
+        logger.debug("Final Mapping: ", "\033[38;5;34m",self.beads,"\033[0;0m")
+        logger.debug("")
 
-# for idx, conf in enumerate(mol.GetConformers()):
-#     print(f'test conf {idx}')
+    def run_parameterisation(self):
+        """ Bead parameterisation. """
 
-coords0 = get_coords(mol,beads)
+        print("Performing CG Parameterisation:")
 
-#Calculate bonded interactions and write gromacs files
-write_gro(mol_name,bead_types,coords0,args.f + '.gro',path_out=args.path_out)
-write_itp(mol_name,bead_types,coords0,charges,all_smi,A_cg,args.f + '.itp',path_out=args.path_out)
+        if self.tune:
+            logger.debug("Atom tuning is active: beads will be reassessed based on adjacent groups log Kow, rather then just their own fragments log Kow")
+        if self.tune:
+            logger.debug("")
 
-if args.v: print("")
-print("All done. Thanks for using cg_param!")
+        self.bead_types, self.charges, self.all_smi, self.DG_data = get_types(
+            self.beads,
+            self.mol,
+            self.ring_beads,
+            self.matched_maps,
+            self.matched_beads,
+            self.adjacency,
+            self.path_matrix,
+            tune=self.tune)
+
+        logger.debug("Bead Types: ", self.bead_types)
+        logger.debug("Bead Charges: ", self.charges)
+
+        # return bead_types, charges, all_smi, DG_data
+
+    def calc_coordinates(self):
+            #Generate atomistic conformers
+        logger.debug("")
+        print("Generating Atomistic Conformers:")
+        logger.debug("")
+        # nconfs = 200
+
+        print('Adding hydrogens and optimizing structure.')
+        self.nconfs = 200
+        self.mol_h = Chem.AddHs(copy.deepcopy(self.mol))
+        AllChem.EmbedMultipleConfs(self.mol,numConfs=self.nconfs,randomSeed=random.randint(1,1000),useRandomCoords=True)
+        AllChem.UFFOptimizeMoleculeConfs(self.mol_h)
+        print(f'n_atoms with hydrogens: {self.mol_h.GetNumAtoms()}')
+
+        self.coords0 = get_coords(self.mol_h,self.beads)
+
+    def write_output(self):
+        """ Calculate bonded interactions and write gromacs files. """
+
+        gro_file = self.path_out / 'name' / '.gro'
+        write_gro(
+            self.name,
+            self.bead_types,
+            self.coords0,
+            gro_file,
+        )
+
+        itp_file = self.path_out / 'name' / '.itp'
+        write_itp(
+            self.name,
+            self.bead_types,
+            self.ring_beads,
+            self.coords0,
+            self.charges,
+            self.all_smi,
+            self.adjacency,
+            itp_file,
+            self.mol_h,
+            self.beads,
+            self.nconfs
+        )
+
