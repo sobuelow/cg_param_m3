@@ -1,44 +1,28 @@
-#!/usr/bin/env python
-
-import argparse
 import collections
 import copy
 import itertools
+import logging
 import math
 import os
 import random
 import re
-import sys
-from importlib.resources import files
-from operator import itemgetter
+
 from dataclasses import dataclass
-
-from numpy.typing import NDArray
-from typing import Any
-
+from importlib.resources import files
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import requests
-import scipy
+
 from rdkit import Chem, RDConfig
 from rdkit.Chem import (
     AllChem,
     ChemicalFeatures,
-    Descriptors,
-    Draw,
-    rdchem,
+    Mol,
     rdMolDescriptors,
-    Mol
 )
-from rdkit.Chem.Draw import rdMolDraw2D
-from rdkit.Chem.MolStandardize import rdMolStandardize
-from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import floyd_warshall
-from scipy.spatial import ConvexHull, convex_hull_plot_2d
-
-import logging
+from scipy.spatial import ConvexHull
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +174,8 @@ def rank_nodes(A):
     return scores,ties
 
 def lone_atom(ties,A,A_init,scores,ring_beads,matched_maps,comp,exclusion_list):
-    #Finds single-atom beads and takes atoms from adjacent beads
+    """ Finds single-atom beads and takes atoms from adjacent beads. """
+
     groups = []
     temp_exclusions = []
     n = 0
@@ -842,7 +827,7 @@ def get_types(beads,mol,ring_beads,matched_maps,matched_beads,A_cg,path_matrix,t
     
     #Activate neighbour group tuning. Not integrated with charged beads!
     if tune:
-        bead_types = tune_model(beads,bead_types,all_smi,A_cg,ring_beads)
+        bead_types = tune_model(mol,beads,bead_types,all_smi,A_cg,ring_beads)
     
     return bead_types,charges,all_smi,DG_data
 
@@ -854,8 +839,7 @@ def reassign_halogen_adjacent_charge_beads(bead_types,beads,all_smi,A_cg,ring_be
         if 'Q' in btype:
     
             scores,ties = rank_nodes(A_cg)
-            tuned = []
-            fixed = []
+
             for rank in ties:
                 for node in rank:
                     if not any(node in ring for ring in ring_beads):
@@ -873,7 +857,7 @@ def reassign_halogen_adjacent_charge_beads(bead_types,beads,all_smi,A_cg,ring_be
                                         bead_types[z]='SQ1p'
     return bead_types
 
-def tune_model(beads,bead_types,all_smi,A_cg,ring_beads):
+def tune_model(mol,beads,bead_types,all_smi,A_cg,ring_beads):
     #Gets pairs of beads for tuning by ordering beads by centrality and grouping bonded pairs 
     
     scores,ties = rank_nodes(A_cg)
@@ -906,7 +890,7 @@ def tune_model(beads,bead_types,all_smi,A_cg,ring_beads):
                     fixed.append(bonded[0])
 
     for t,f in zip(tuned,fixed):
-        bead_types[t] = tune_bead(beads[t],bead_types[t],beads[f],bead_types[f])
+        bead_types[t] = tune_bead(mol,beads[t],bead_types[t],beads[f],bead_types[f])
 
     #Code to ensure Q beads are unchanged in the process of tuning: log kow a poor comparison for ions
     for i,x in enumerate(original):
@@ -1051,7 +1035,7 @@ def get_alogps(bead_smi):
     
     return logK*5.74
 
-def bead_coords(bead,conf):
+def bead_coords(mol_h,bead,conf):
     #Get coordinates of a bead
 
     coords = np.array([0.0,0.0,0.0])
@@ -1060,7 +1044,7 @@ def bead_coords(bead,conf):
     for atom in bead:
         coords += conf.GetAtomPosition(atom)
         total+=1
-        check = conf.GetAtomWithIdx(atom)
+        check = mol_h.GetAtomWithIdx(atom)
         #Include H (Connectivity not included in beads matrix)
         for hydrogen in check.GetNeighbors():
             symbol=hydrogen.GetSymbol()
@@ -1287,7 +1271,7 @@ def write_itp(
         all_smi,
         A_cg,
         itp_file,
-        mol,
+        mol_h,
         beads,
         nconfs
     ):
@@ -1311,7 +1295,7 @@ def write_itp(
             ring_beads,
             real,
             virtual,
-            mol,
+            mol_h,
             beads,
             nconfs
         )
@@ -1319,7 +1303,7 @@ def write_itp(
             itp,
             bonds,
             constraints,
-            mol,
+            mol_h,
             beads,
             nconfs
         )
@@ -1357,7 +1341,7 @@ def write_atoms(
 
     return itp, virtual, real
     
-def write_bonds(itp,A_cg,ring_atoms,real,virtual,mol,beads,nconfs):
+def write_bonds(itp,A_cg,ring_atoms,real,virtual,mol_h,beads,nconfs):
     #Writes [bonds] and [constraints] blocks in itp file
     #Construct bonded structures for ring systems, including dihedrals   
     dihedrals = []
@@ -1372,9 +1356,9 @@ def write_bonds(itp,A_cg,ring_atoms,real,virtual,mol,beads,nconfs):
     #Get average bond lengths from all conformers
     rs = np.zeros(len(bonds))
     coords = np.zeros((len(beads),3))
-    for conf in mol.GetConformers():
+    for conf in mol_h.GetConformers():
         for i,bead in enumerate(beads):
-            coords[i] = bead_coords(bead,conf)
+            coords[i] = bead_coords(mol_h,bead,conf)
         for b,bond in enumerate(bonds):
             rs[b] += np.linalg.norm(np.subtract(coords[bond[0]],coords[bond[1]]))/nconfs
 
@@ -1406,7 +1390,7 @@ def write_bonds(itp,A_cg,ring_atoms,real,virtual,mol,beads,nconfs):
 
     return itp, bonds, constraints, dihedrals
 
-def write_angles(itp, bonds, constraints, mol, beads, nconfs):
+def write_angles(itp, bonds, constraints, mol_h, beads, nconfs):
     #Writes [angles] block in itp file
     k = 25.0
 
@@ -1425,9 +1409,9 @@ def write_angles(itp, bonds, constraints, mol, beads, nconfs):
         itp.write('\n[angles]\n')
         coords = np.zeros((len(beads),3))
         thetas = np.zeros(len(angles))
-        for conf in mol.GetConformers():
+        for conf in mol_h.GetConformers():
             for i,bead in enumerate(beads):
-                coords[i] = bead_coords(bead,conf)
+                coords[i] = bead_coords(mol_h,bead,conf)
             for a,angle in enumerate(angles):
                 vec1 = np.subtract(coords[angle[0]],coords[angle[1]])
                 vec1 = vec1/np.linalg.norm(vec1)
@@ -1577,7 +1561,7 @@ def get_smarts_matches(mol):
                 already_matched.append(match)
     return matched_maps,matched_beads
 
-def tune_bead(var_bead,var_type,fix_bead,fix_type):
+def tune_bead(mol,var_bead,var_type,fix_bead,fix_type):
     dimer_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,fix_bead+var_bead)
 
     dimer_DG = get_alogps(dimer_smi)
@@ -1606,32 +1590,6 @@ def tune_bead(var_bead,var_type,fix_bead,fix_type):
 
     return var_type
 
-# def molecule_image(mol):
-
-#     #Output 2D image of molecule with atom indexes labeled: Atom 0 unlabelled
-#     canvas_width_pixels = 500
-#     canvas_height_pixels  = 500
-   
-#     mol_draw = rdMolDraw2D.PrepareMolForDrawing(mol)
-
-#     mol_draw = Chem.RemoveHs(mol)
-#     for atom in mol_draw.GetAtoms():
-#         atom.SetAtomMapNum(atom.GetIdx())
-    
-#     drawer = rdMolDraw2D.MolDraw2DSVG(canvas_width_pixels,canvas_height_pixels)
-#     drawer.DrawMolecule(mol_draw)
-#     drawer.FinishDrawing()
-#     svg = drawer.GetDrawingText()
-#     with open('output.svg', 'w') as f:
-#         f.write(svg)
-
-    # return {
-    #     "adjacency": A_cg,
-    #     "beads": beads,
-    #     "ring_beads": ring_beads,
-    #     "path_matrix": path_matrix,
-    # }
-
 @dataclass
 class CGParam:
     """ Main CGParam class. """
@@ -1649,11 +1607,6 @@ class CGParam:
         self.run_parameterisation()
         self.calc_coordinates()
         self.write_output()
-
-        # bead_types, charges, all_smi, DG_data = run_parameterisation(beads, mol, ring_beads, matched_maps, tune=False)
-        # coords0 = (mol, beads)
-
-        # write_output()
 
     def run_mapping(self):
         """ Coarse-grained mapping. """
@@ -1707,19 +1660,16 @@ class CGParam:
         logger.debug("Bead Types: ", self.bead_types)
         logger.debug("Bead Charges: ", self.charges)
 
-        # return bead_types, charges, all_smi, DG_data
-
     def calc_coordinates(self):
             #Generate atomistic conformers
         logger.debug("")
         print("Generating Atomistic Conformers:")
         logger.debug("")
-        # nconfs = 200
 
         print('Adding hydrogens and optimizing structure.')
         self.nconfs = 200
         self.mol_h = Chem.AddHs(copy.deepcopy(self.mol))
-        AllChem.EmbedMultipleConfs(self.mol,numConfs=self.nconfs,randomSeed=random.randint(1,1000),useRandomCoords=True)
+        AllChem.EmbedMultipleConfs(self.mol_h,numConfs=self.nconfs,randomSeed=random.randint(1,1000),useRandomCoords=True)
         AllChem.UFFOptimizeMoleculeConfs(self.mol_h)
         print(f'n_atoms with hydrogens: {self.mol_h.GetNumAtoms()}')
 
@@ -1728,7 +1678,7 @@ class CGParam:
     def write_output(self):
         """ Calculate bonded interactions and write gromacs files. """
 
-        gro_file = self.path_out / 'name' / '.gro'
+        gro_file = self.path_out / f'{self.name}.gro'
         write_gro(
             self.name,
             self.bead_types,
@@ -1736,7 +1686,7 @@ class CGParam:
             gro_file,
         )
 
-        itp_file = self.path_out / 'name' / '.itp'
+        itp_file = self.path_out / f'{self.name}.itp'
         write_itp(
             self.name,
             self.bead_types,

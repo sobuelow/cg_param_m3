@@ -1,9 +1,8 @@
 import argparse
 import logging
+from pathlib import Path
 
 from rdkit import Chem
-
-from pathlib import Path
 
 from .core import CGParam
 
