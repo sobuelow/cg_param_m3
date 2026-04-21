@@ -1594,14 +1594,18 @@ def tune_bead(mol,var_bead,var_type,fix_bead,fix_type):
 class CGParam:
     """ Main CGParam class. """
 
-    name: str
-    mol: Mol
+    # name: str
+    # mol: Mol
     n_iter: int = 3
     tune: bool = False
-    path_out: str = 'output'
+    # path_out: str = 'output'
 
-    def run_pipeline(self):
+    def run_pipeline(self, name, mol, path_out = 'output'):
         """ Run full cg_param pipeline. """
+
+        self.name = name
+        self.mol = mol
+        self.path_out = path_out
 
         self.path_out = Path(self.path_out)
         os.makedirs(self.path_out,exist_ok=True)
@@ -1703,4 +1707,3 @@ class CGParam:
             self.beads,
             self.nconfs
         )
-
