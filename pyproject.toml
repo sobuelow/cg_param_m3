@@ -29,4 +29,4 @@ cg-param-m3 = "cg_param_m3.cli:main"
 where = ["."]
 
 [tool.setuptools.package-data]
-cg_param_m3 = ["data/*.dat"]
+"cgparam" = ["data/*.dat"]
