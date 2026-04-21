@@ -806,7 +806,7 @@ def get_smi(bead,mol):
 def get_types(beads,mol,ring_beads,matched_maps,matched_beads,A_cg,path_matrix,tune=False):
     #loops through beads and determines bead type
     # script_path = os.path.dirname(os.path.realpath(__file__))
-    script_path = files("cg_param_m3.data") / "fragments-exp.dat"
+    script_path = files("cgparam.data") / "fragments-exp.dat"
     DG_data = read_DG_data(script_path) # read_DG_data('{}/fragments-exp.dat'.format(script_path))
 
     bead_types = []
@@ -1598,10 +1598,13 @@ class CGParam:
     mol: Mol
     n_iter: int = 3
     tune: bool = False
-    path_out: Path = Path('output')
+    path_out: str = 'output'
 
     def run_pipeline(self):
         """ Run full cg_param pipeline. """
+
+        self.path_out = Path(self.path_out)
+        os.makedirs(self.path_out,exist_ok=True)
 
         self.run_mapping()
         self.run_parameterisation()
