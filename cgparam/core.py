@@ -24,6 +24,8 @@ from rdkit.Chem import (
 from scipy.sparse.csgraph import floyd_warshall
 from scipy.spatial import ConvexHull
 
+import matplotlib.pyplot as plt
+
 logger = logging.getLogger(__name__)
 
 delta_Gs = {
@@ -1603,6 +1605,8 @@ class CGParam:
     def run_pipeline(self, name, mol, path_out = 'output'):
         """ Run full cg_param pipeline. """
 
+        print(path_out)
+
         self.name = name
         self.mol = mol
         self.path_out = path_out
@@ -1682,6 +1686,234 @@ class CGParam:
 
         self.coords0 = get_coords(self.mol_h,self.beads)
 
+        # print(self.beads)
+        self.mol_2d = Chem.RemoveHs(self.mol_h)
+
+        AllChem.Compute2DCoords(self.mol_2d)
+        self.coords2d = get_coords(self.mol_2d, self.beads)
+
+        with Chem.SDWriter('foo.sdf') as w:
+            w.write(self.mol_2d)       
+
+        # print(self.mol_h)
+        print(self.coords0)
+        print(self.coords2d)
+
+        print(self.beads)
+
+        self.bead_sigmas = np.array([bead_to_sigma(bead) for bead in self.bead_types])
+        print(self.bead_types)
+        print(self.bead_sigmas)
+        print(self.charges)
+
+        self.draw_overlay()
+
+    def draw_overlay(self):#mol, coords_cg, beads, bead_sigmas, bead_types, qs):
+
+        from rdkit.Chem.Draw import rdMolDraw2D
+        from PIL import Image
+        import io
+        import matplotlib.patches as mpatches
+
+        conf = self.mol_2d.GetConformer()
+        coords_aa = conf.GetPositions() / 10.
+
+            # print(bond.GetEndAtomIdx())
+
+        # img_size = (2400, 1600)
+        img_size = (600, 400)
+        drawer = rdMolDraw2D.MolDraw2DSVG(*img_size)        # or MolDraw2DCairo
+        drawer.drawOptions().addAtomIndices = False
+        drawer.DrawMolecule(self.mol_2d)
+        drawer.FinishDrawing()
+        svg_str = drawer.GetDrawingText()
+
+        # img_size = (600, 400)
+        # drawer2 = rdMolDraw2D.MolDraw2DCairo(*img_size)
+        # drawer2.DrawMolecule(self.mol_2d)
+        # drawer2.FinishDrawing()
+        # img = Image.open(io.BytesIO(drawer2.GetDrawingText()))
+
+        # img = Image.open(drawer.GetDrawingText())
+
+        atoms_px = []
+
+        for idx in range(self.mol_2d.GetNumAtoms()):
+            atoms_px.append(rdkit_to_pixel(idx, drawer))
+        
+        atoms_px = np.array(atoms_px)
+        print(atoms_px)
+            # print(
+
+        beads_px = []
+        for bead in self.beads:
+            pos_bead = []
+            for at_idx in bead:
+                pos_bead.append(atoms_px[at_idx])
+            pos_bead = np.array(pos_bead)
+            pos_bead = np.mean(pos_bead,axis=0)
+            beads_px.append(pos_bead)
+
+        beads_px = np.array(beads_px)
+
+        bond_lengths = []
+        for bond in self.mol_2d.GetBonds():
+            i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            bond_lengths.append(np.linalg.norm(atoms_px[i] - atoms_px[j]))
+
+        nm_equiv = np.mean(bond_lengths) / 1.5 * 10. * 0.9 # scale down a bit for illustration
+
+        pad = np.max(self.bead_sigmas * nm_equiv / 2.) * 1.2  # small extra padding
+
+        import xml.etree.ElementTree as ET
+
+        # ── 3. Parse the SVG and expand the canvas for padding ───────────────────────
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+        ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
+        root = ET.fromstring(svg_str)
+
+        new_w = img_size[0] + 2 * pad
+        new_h = img_size[1] + 2 * pad
+        root.set("width",  str(new_w))
+        root.set("height", str(new_h))
+        root.set("viewBox", f"0 0 {new_w} {new_h}")
+
+        # Shift the existing molecule drawing by the padding amount
+        ns = "http://www.w3.org/2000/svg"
+        g = root.find(f"{{{ns}}}g")            # RDKit wraps everything in a <g>
+        if g is not None:
+            existing = g.get("transform", "")
+            g.set("transform", f"translate({pad},{pad}) " + existing)
+
+        # ── 4. Inject bead circles as SVG elements ────────────────────────────────────
+        def hex_to_rgb_opacity(hexcolor, alpha):
+            h = hexcolor.lstrip("#")
+            r, g_c, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+            return f"rgba({r},{g_c},{b},{alpha})"
+
+        for bead_px, bead_sigma, bead_type, q in zip(beads_px, self.bead_sigmas, self.bead_types, self.charges):
+            color = get_bead_color(bead_type, q)
+
+            # color = bead_colors[bead_id]
+            cx, cy = bead_px
+            # print(cx, cy)
+            bead_radius = bead_sigma * nm_equiv / 2. # sigma to radius
+
+            # Filled semi-transparent circle
+            circle = ET.SubElement(root, f"{{{ns}}}circle")
+            circle.set("cx", f"{cx:.2f}")
+            circle.set("cy", f"{cy:.2f}")
+            circle.set("r",  f"{bead_radius:.2f}")
+            circle.set("fill", color)
+            circle.set("fill-opacity", "0.3")
+            circle.set("stroke", color)
+            circle.set("stroke-width", "2")
+            circle.set("stroke-dasharray", "6,3")
+
+            # Label
+            text = ET.SubElement(root, f"{{{ns}}}text")
+            text.set("x", f"{cx:.2f}")
+            text.set("y", f"{cy - bead_radius*1.15:.2f}")
+            text.set("text-anchor", "middle")
+            text.set("dominant-baseline", "middle")
+            text.set("font-size", "20")
+            text.set("font-weight", "bold")
+            text.set("font-family", "IBM Plex Sans, sans-serif")
+            text.set("fill", color)
+            text.text = bead_type
+
+        # After injecting all circles and labels, compute tight bounds
+        all_content_x = []
+        all_content_y = []
+
+        for idx, px in enumerate(atoms_px):
+            all_content_x.append(px[0])
+            all_content_y.append(px[1])
+
+        for center in beads_px:
+            all_content_x.append(center[0] - bead_radius)
+            all_content_x.append(center[0] + bead_radius)
+            all_content_y.append(center[1] - bead_radius)
+            all_content_y.append(center[1] + bead_radius)
+
+        margin = pad
+        x_min = min(all_content_x) - margin
+        y_min = min(all_content_y) - margin
+        x_max = max(all_content_x) + margin
+        y_max = max(all_content_y) + margin
+
+        tight_w = x_max - x_min
+        tight_h = y_max - y_min
+
+        root.set("width",   f"{tight_w:.2f}")
+        root.set("height",  f"{tight_h:.2f}")
+        root.set("viewBox", f"{x_min:.2f} {y_min:.2f} {tight_w:.2f} {tight_h:.2f}")
+
+        # ── 5. Write out ──────────────────────────────────────────────────────────────
+        final_svg = ET.tostring(root, encoding="unicode")
+        with open(self.path_out / f'{self.name}_overlay.svg', "w") as f:
+            f.write(final_svg)
+
+        # fig, ax = plt.subplots()
+
+        # ax.imshow(img)
+        # ax.axis("off")
+
+        # bond_lengths = []
+        # for bond in self.mol_2d.GetBonds():
+        #     i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        #     bond_lengths.append(np.linalg.norm(atoms_px[i] - atoms_px[j]))
+
+        # nm_equiv = np.mean(bond_lengths) / 1.5 * 10. * 0.9 # scale down a bit for illustration
+
+        # # ax.plot(beads_px[:,0],beads_px[:,1],'o')
+        # for bead_px, bead_sigma, bead_type, q in zip(beads_px, self.bead_sigmas, self.bead_types, self.charges):
+
+        #     if 'C' in bead_type:
+        #         color = 'gray'
+        #     elif 'N' in bead_type:
+        #         color = 'forestgreen'
+        #     elif 'P' in bead_type:
+        #         color = 'purple'
+        #     elif 'Q' in bead_type:
+        #         print(q)
+        #         if q > 0:
+        #             color = 'blue'
+        #         else:
+        #             color = 'red'
+        #         # color = 'red'
+        #     elif 'X' in bead_type:
+        #         color = 'brown'
+
+        #     # color = bead_colors[bead_id]
+        #     circle = mpatches.Circle(
+        #         bead_px, radius=bead_sigma * nm_equiv / 2., # sigma to radius
+        #         color=color, alpha=0.35, linewidth=2,
+        #         linestyle="--", fill=True
+        #     )
+        #     ax.add_patch(circle)
+        #     ax.text(
+        #     bead_px[0], bead_px[1] - bead_sigma * nm_equiv / 2. * 1.2, bead_type,
+        #     ha="center", va="center",
+        #     fontsize=11, fontweight="bold", color=color,
+        # )
+
+        # # all_px = np.array(list(atoms_px.values()))
+
+        # # Compute bounds that include all bead circles
+        # margin = np.max(self.bead_sigmas * nm_equiv / 2.) * 1.3  # small extra padding
+        # # all_centers = np.array(list(beads_px.values()))
+
+        # x_min = min(atoms_px[:, 0].min(), (beads_px[:, 0] - margin).min())
+        # x_max = max(atoms_px[:, 0].max(), (beads_px[:, 0] + margin).max())
+        # y_min = min(atoms_px[:, 1].min(), (beads_px[:, 1] - margin).min())
+        # y_max = max(atoms_px[:, 1].max(), (beads_px[:, 1] + margin).max())
+
+        # ax.set_xlim(x_min, x_max)
+        # ax.set_ylim(y_max, y_min)  # note: imshow flips y-axis, so max comes first
+
+        # fig.savefig(self.path_out / f'{self.name}_overlay.svg', dpi=300)
+
     def write_output(self):
         """ Calculate bonded interactions and write gromacs files. """
 
@@ -1707,3 +1939,35 @@ class CGParam:
             self.beads,
             self.nconfs
         )
+
+def rdkit_to_pixel(atom_idx, drawer):
+    pt = drawer.GetDrawCoords(atom_idx)
+    return np.array([pt.x, pt.y])
+
+def bead_to_sigma(bead):
+    if bead[0] == 'T':
+        sigma = 0.34
+    elif bead[0] == 'S':
+        sigma = 0.41
+    else:
+        sigma = 0.47
+    return sigma
+
+def get_bead_color(bead_type, q):
+    if 'C' in bead_type:
+        color = 'gray'
+    elif 'N' in bead_type:
+        color = 'forestgreen'
+    elif 'P' in bead_type:
+        color = 'purple'
+    elif 'Q' in bead_type:
+        print(q)
+        if q > 0:
+            color = 'blue'
+        else:
+            color = 'red'
+    elif 'X' in bead_type:
+        color = 'brown'
+    else:
+        color = 'black'
+    return color

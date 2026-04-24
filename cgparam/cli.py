@@ -37,14 +37,14 @@ def main():
     mol = prep_mol(args.smiles)
 
     cgparam = CGParam(
-        name=args.name,
-        mol = mol,
+        # name=args.name,
+        # mol = mol,
         n_iter = args.iter,
         tune = args.t,
-        path_out = path_out,
+        # path_out = path_out,
     )
 
-    cgparam.run_pipeline()
+    cgparam.run_pipeline(args.name, mol, path_out = path_out)
 
     logger.debug("")
     logger.debug("All done. Thanks for using cg_param!")

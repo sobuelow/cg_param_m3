@@ -23,7 +23,7 @@ dependencies = [
 dev = ["pytest"]
 
 [project.scripts]
-cg-param-m3 = "cg_param_m3.cli:main"
+cgparam = "cgparam.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
