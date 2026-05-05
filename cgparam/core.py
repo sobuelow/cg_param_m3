@@ -8,7 +8,7 @@ import random
 import re
 
 from dataclasses import dataclass
-from importlib.resources import files
+from importlib import resources
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +25,9 @@ from scipy.sparse.csgraph import floyd_warshall
 from scipy.spatial import ConvexHull
 
 import matplotlib.pyplot as plt
+
+pkg_base = resources.files('cgparam')
+ROOT_CGPARAM_DATA = Path(f'{pkg_base}/data')
 
 logger = logging.getLogger(__name__)
 
@@ -808,7 +811,7 @@ def get_smi(bead,mol):
 def get_types(beads,mol,ring_beads,matched_maps,matched_beads,A_cg,path_matrix,tune=False):
     #loops through beads and determines bead type
     # script_path = os.path.dirname(os.path.realpath(__file__))
-    script_path = files("cgparam.data") / "fragments-exp.dat"
+    script_path = ROOT_CGPARAM_DATA / "fragments-exp.dat"
     DG_data = read_DG_data(script_path) # read_DG_data('{}/fragments-exp.dat'.format(script_path))
 
     bead_types = []
@@ -1576,13 +1579,6 @@ def tune_bead(mol,var_bead,var_type,fix_bead,fix_type):
 
     fix_base = fix_type[1:] if fix_type[1].isalpha() else fix_type
 
-   # # Testing. Treat Q bead as P for purpose of tuning
-   # if 'Q' in fix_base:
-   #     fix_base=fix_base.replace('Q','P')
-   #     if fix_base[-1]=='n' or fix_base[-1]=='p':
-   #         fix_base=fix_base[:-1]
-
-    #Get closest sum of two beads
     fix_DG = delta_Gs[0][fix_cat][fix_size][m3_beads[fix_cat].index(fix_base)]
     dimer_sum = np.asarray(delta_Gs[0][var_cat][var_size]) + fix_DG
     dimer_diff = np.abs(dimer_sum - dimer_DG)
@@ -1692,13 +1688,6 @@ class CGParam:
         AllChem.Compute2DCoords(self.mol_2d)
         self.coords2d = get_coords(self.mol_2d, self.beads)
 
-        with Chem.SDWriter('foo.sdf') as w:
-            w.write(self.mol_2d)       
-
-        # print(self.mol_h)
-        print(self.coords0)
-        print(self.coords2d)
-
         print(self.beads)
 
         self.bead_sigmas = np.array([bead_to_sigma(bead) for bead in self.bead_types])
@@ -1708,7 +1697,7 @@ class CGParam:
 
         self.draw_overlay()
 
-    def draw_overlay(self):#mol, coords_cg, beads, bead_sigmas, bead_types, qs):
+    def draw_overlay(self):
 
         from rdkit.Chem.Draw import rdMolDraw2D
         from PIL import Image
@@ -1716,11 +1705,8 @@ class CGParam:
         import matplotlib.patches as mpatches
 
         conf = self.mol_2d.GetConformer()
-        coords_aa = conf.GetPositions() / 10.
+        # coords_aa = conf.GetPositions() / 10.
 
-            # print(bond.GetEndAtomIdx())
-
-        # img_size = (2400, 1600)
         img_size = (600, 400)
         drawer = rdMolDraw2D.MolDraw2DSVG(*img_size)        # or MolDraw2DCairo
         drawer.drawOptions().addAtomIndices = False
@@ -1728,22 +1714,12 @@ class CGParam:
         drawer.FinishDrawing()
         svg_str = drawer.GetDrawingText()
 
-        # img_size = (600, 400)
-        # drawer2 = rdMolDraw2D.MolDraw2DCairo(*img_size)
-        # drawer2.DrawMolecule(self.mol_2d)
-        # drawer2.FinishDrawing()
-        # img = Image.open(io.BytesIO(drawer2.GetDrawingText()))
-
-        # img = Image.open(drawer.GetDrawingText())
-
         atoms_px = []
 
         for idx in range(self.mol_2d.GetNumAtoms()):
             atoms_px.append(rdkit_to_pixel(idx, drawer))
         
         atoms_px = np.array(atoms_px)
-        print(atoms_px)
-            # print(
 
         beads_px = []
         for bead in self.beads:
@@ -1791,7 +1767,12 @@ class CGParam:
             r, g_c, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
             return f"rgba({r},{g_c},{b},{alpha})"
 
-        for bead_px, bead_sigma, bead_type, q in zip(beads_px, self.bead_sigmas, self.bead_types, self.charges):
+        if len(self.bead_types) > 8:
+            fontsize = 16
+        else:
+            fontsize = 20
+
+        for idx, (bead_px, bead_sigma, bead_type, q) in enumerate(zip(beads_px, self.bead_sigmas, self.bead_types, self.charges)):
             color = get_bead_color(bead_type, q)
 
             # color = bead_colors[bead_id]
@@ -1816,11 +1797,11 @@ class CGParam:
             text.set("y", f"{cy - bead_radius*1.15:.2f}")
             text.set("text-anchor", "middle")
             text.set("dominant-baseline", "middle")
-            text.set("font-size", "20")
+            text.set("font-size", f"{fontsize}")
             text.set("font-weight", "bold")
             text.set("font-family", "IBM Plex Sans, sans-serif")
             text.set("fill", color)
-            text.text = bead_type
+            text.text = f'[{idx+1}] {bead_type}'
 
         # After injecting all circles and labels, compute tight bounds
         all_content_x = []
@@ -1853,66 +1834,6 @@ class CGParam:
         final_svg = ET.tostring(root, encoding="unicode")
         with open(self.path_out / f'{self.name}_overlay.svg', "w") as f:
             f.write(final_svg)
-
-        # fig, ax = plt.subplots()
-
-        # ax.imshow(img)
-        # ax.axis("off")
-
-        # bond_lengths = []
-        # for bond in self.mol_2d.GetBonds():
-        #     i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        #     bond_lengths.append(np.linalg.norm(atoms_px[i] - atoms_px[j]))
-
-        # nm_equiv = np.mean(bond_lengths) / 1.5 * 10. * 0.9 # scale down a bit for illustration
-
-        # # ax.plot(beads_px[:,0],beads_px[:,1],'o')
-        # for bead_px, bead_sigma, bead_type, q in zip(beads_px, self.bead_sigmas, self.bead_types, self.charges):
-
-        #     if 'C' in bead_type:
-        #         color = 'gray'
-        #     elif 'N' in bead_type:
-        #         color = 'forestgreen'
-        #     elif 'P' in bead_type:
-        #         color = 'purple'
-        #     elif 'Q' in bead_type:
-        #         print(q)
-        #         if q > 0:
-        #             color = 'blue'
-        #         else:
-        #             color = 'red'
-        #         # color = 'red'
-        #     elif 'X' in bead_type:
-        #         color = 'brown'
-
-        #     # color = bead_colors[bead_id]
-        #     circle = mpatches.Circle(
-        #         bead_px, radius=bead_sigma * nm_equiv / 2., # sigma to radius
-        #         color=color, alpha=0.35, linewidth=2,
-        #         linestyle="--", fill=True
-        #     )
-        #     ax.add_patch(circle)
-        #     ax.text(
-        #     bead_px[0], bead_px[1] - bead_sigma * nm_equiv / 2. * 1.2, bead_type,
-        #     ha="center", va="center",
-        #     fontsize=11, fontweight="bold", color=color,
-        # )
-
-        # # all_px = np.array(list(atoms_px.values()))
-
-        # # Compute bounds that include all bead circles
-        # margin = np.max(self.bead_sigmas * nm_equiv / 2.) * 1.3  # small extra padding
-        # # all_centers = np.array(list(beads_px.values()))
-
-        # x_min = min(atoms_px[:, 0].min(), (beads_px[:, 0] - margin).min())
-        # x_max = max(atoms_px[:, 0].max(), (beads_px[:, 0] + margin).max())
-        # y_min = min(atoms_px[:, 1].min(), (beads_px[:, 1] - margin).min())
-        # y_max = max(atoms_px[:, 1].max(), (beads_px[:, 1] + margin).max())
-
-        # ax.set_xlim(x_min, x_max)
-        # ax.set_ylim(y_max, y_min)  # note: imshow flips y-axis, so max comes first
-
-        # fig.savefig(self.path_out / f'{self.name}_overlay.svg', dpi=300)
 
     def write_output(self):
         """ Calculate bonded interactions and write gromacs files. """
