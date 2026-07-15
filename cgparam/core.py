@@ -24,8 +24,6 @@ from rdkit.Chem import (
 from scipy.sparse.csgraph import floyd_warshall
 from scipy.spatial import ConvexHull
 
-import matplotlib.pyplot as plt
-
 pkg_base = resources.files('cgparam')
 ROOT_CGPARAM_DATA = Path(f'{pkg_base}/data')
 
@@ -366,18 +364,29 @@ def process_rings(ring_beads,matched_maps,groups):
 
     return groups,new_ring_beads,new_matched_maps
 
-def new_connectivity(groups,oldA):
+# def new_connectivity(groups,oldA):
+#     # Get A matrix for new mapping
+#     newA = np.zeros((len(groups),len(groups)),dtype=int)
+#     for i,gi in enumerate(groups):
+#         for j,gj in enumerate(groups[i+1:]):
+#             for k in gi:
+#                 for l in gj:
+#                     if oldA[k,l] == 1:
+#                         newA[i,i+j+1] = 1
+#                         newA[i+j+1,i] = 1
+#                 if newA[i,i+j+1] == 1:
+#                     break
+
+#     return newA
+
+def new_connectivity(groups, oldA):
     # Get A matrix for new mapping
-    newA = np.zeros((len(groups),len(groups)),dtype=int)
-    for i,gi in enumerate(groups):
-        for j,gj in enumerate(groups[i+1:]):
-            for k in gi:
-                for l in gj:
-                    if oldA[k,l] == 1:
-                        newA[i,i+j+1] = 1
-                        newA[i+j+1,i] = 1
-                if newA[i,i+j+1] == 1:
-                    break
+    newA = np.zeros((len(groups), len(groups)), dtype=int)
+    for i, gi in enumerate(groups):
+        for j, gj in enumerate(groups[i+1:], start=i+1):
+            if oldA[np.ix_(gi, gj)].any():
+                newA[i, j] = 1
+                newA[j, i] = 1
 
     return newA
 
@@ -596,14 +605,16 @@ def path_contraction(last_iter,postprocess,A_init,w_init,ring_beads,matched_maps
 def get_size(comp,path_matrix):
     
     # Find longest path between atoms in bead
-    longpath = 0
-    for i in comp:
-        for j in comp:
-            path = path_matrix[i,j]
-            if path > longpath:
-                    longpath = path
+    # longpath = 0
+    # for i in comp:
+    #     for j in comp:
+    #         path = path_matrix[i,j]
+    #         if path > longpath:
+    #                 longpath = path
+    # return longpath
 
-    return longpath
+    return np.max(path_matrix[np.ix_(comp, comp)])
+
 
 def get_avgmass(comp,masses):
     #Average atomic mass of heavy atoms in bead
@@ -1674,7 +1685,7 @@ class CGParam:
         logger.debug("")
 
         print('Adding hydrogens and optimizing structure.')
-        self.nconfs = 200
+        self.nconfs = 40 # 200
         self.mol_h = Chem.AddHs(copy.deepcopy(self.mol))
         AllChem.EmbedMultipleConfs(self.mol_h,numConfs=self.nconfs,randomSeed=random.randint(1,1000),useRandomCoords=True)
         AllChem.UFFOptimizeMoleculeConfs(self.mol_h)
@@ -1688,12 +1699,12 @@ class CGParam:
         AllChem.Compute2DCoords(self.mol_2d)
         self.coords2d = get_coords(self.mol_2d, self.beads)
 
-        print(self.beads)
+        # print(self.beads)
 
         self.bead_sigmas = np.array([bead_to_sigma(bead) for bead in self.bead_types])
-        print(self.bead_types)
-        print(self.bead_sigmas)
-        print(self.charges)
+        # print(self.bead_types)
+        # print(self.bead_sigmas)
+        # print(self.charges)
 
         self.draw_overlay()
 
