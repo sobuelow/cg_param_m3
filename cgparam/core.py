@@ -1893,7 +1893,7 @@ def get_bead_color(bead_type, q):
     elif 'P' in bead_type:
         color = 'purple'
     elif 'Q' in bead_type:
-        print(q)
+        # print(q)
         if q > 0:
             color = 'blue'
         else:
