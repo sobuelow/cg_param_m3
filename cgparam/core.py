@@ -1008,22 +1008,22 @@ def param_bead(beads,bead,bead_smi,ring_size,frag_size,ring,qbead,don,acc,DG_dat
 
     if btype == '':
         #Parametrise charged beads based on h-bonding behaviour
-        if qbead != 0:
-            btype = 'Qx' #placeholder, not a real bead type
+        # if qbead != 0:
+        #     btype = 'Qx' #placeholder, not a real bead type
             
-        else:
-            try:
-                #Get from list of precalculated fragments
-                alogps = DG_data[bead_smi]['DG']
-            except:
-                #If not on list, get from server or Wildmann-Crippen
-                print('{} not on list'.format(bead_smi))
-                alogps = get_alogps(bead_smi)
+        # else:
+        try:
+            #Get from list of precalculated fragments
+            alogps = DG_data[bead_smi]['DG']
+        except:
+            #If not on list, get from server or Wildmann-Crippen
+            print('{} not on list'.format(bead_smi))
+            alogps = get_alogps(bead_smi)
 
-            #Get difference between fragment DG_OW and all beads
-            diffs = get_diffs(alogps,ring_size,frag_size,category,size)
-            sort_diffs = np.argsort(diffs)
-            btype = types[sort_diffs[0]]
+        #Get difference between fragment DG_OW and all beads
+        diffs = get_diffs(alogps,ring_size,frag_size,category,size)
+        sort_diffs = np.argsort(diffs)
+        btype = types[sort_diffs[0]]
 
         btype = prefix + btype + suffix
     
