@@ -492,24 +492,33 @@ def group_rings(A,ring_atoms,matched_maps,moli):
             #Do mapping for each continuous fragment
             indices = [unmapped[k] for k in frag]
 
-            frag_smi = Chem.rdmolfiles.MolFragmentToSmiles(moli,unmapped).split(".")[0] #Split to ensure identical groups are handled separately
+            frag_smi = Chem.rdmolfiles.MolFragmentToSmiles(moli,indices,canonical=False)
             frag_smi = frag_smi.upper()
-            frag_mol = Chem.MolFromSmiles(frag_smi) 
+            frag_mol = Chem.MolFromSmiles(frag_smi)
             A_frag = np.asarray(Chem.GetAdjacencyMatrix(frag_mol))
 
-            #Assign atom map so that subfrags can be reassigned. 
+            # Keep the parent indices before renumbering the fragment, and
+            # translate any matched groups that are wholly inside it.
+            core_map = [atom.GetAtomMapNum() for atom in frag_mol.GetAtoms()]
+            local_indices = {parent: local for local, parent in enumerate(core_map)}
+            frag_matched_maps = [
+                [local_indices[atom] for atom in match]
+                for match in matched_maps
+                if all(atom in local_indices for atom in match)
+            ]
+
+            #Assign atom map so that subfrags can be reassigned.
             assign_atom_maps(frag_mol)
-            #Find atom map assignments (could also call using mol.GetAtomIDx) to allow backmapping for fragment. Add 0 if relevant, as this is not printed in the SMILES by defualt
-            core_map=re.findall(r"\:([^\]]*)\]",frag_smi)
-            if len(core_map) != len(indices):
-                core_map.insert(0,0)
 
             #Check if there are complete rings within unmapped fragments
             frag_ring_atoms = get_ring_atoms(frag_mol)
             
             #print("frag_ring_atoms",frag_ring_atoms)
-            if frag_ring_atoms:
-                new_beads = group_rings(A_frag,frag_ring_atoms,matched_maps,frag_mol)[1]
+            # Recurse only when extracting the fragment reduced the problem.
+            # Ring systems without a supported edge pattern otherwise produce
+            # the same fragment indefinitely.
+            if frag_ring_atoms and frag_mol.GetNumAtoms() < moli.GetNumAtoms():
+                new_beads = group_rings(A_frag,frag_ring_atoms,frag_matched_maps,frag_mol)[1]
             else:
                 new_beads = []
             frag_ring_beads = new_beads[:]
@@ -521,14 +530,14 @@ def group_rings(A,ring_atoms,matched_maps,moli):
                 A_fragw = include_weights(A_frag,w_frag)
                 scores,ties = rank_nodes(A_fragw)
                 comp = [[i] for i in range(frag_mol.GetNumAtoms())]            
-                new_beads.extend(spectral_grouping(ties,A_frag,scores,frag_ring_beads,comp,path_frag,2,matched_maps)[0])
+                new_beads.extend(spectral_grouping(ties,A_frag,scores,frag_ring_beads,comp,path_frag,2,frag_matched_maps)[0])
             
 
             for bead in new_beads:
 
-                if matched_maps:
+                if frag_matched_maps:
                     match=False
-                    for i in matched_maps:
+                    for i in frag_matched_maps:
                         sorted_match=sorted(i)
                         sorted_bead=sorted(bead)
                         if sorted_match ==sorted_bead:
