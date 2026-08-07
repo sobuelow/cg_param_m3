@@ -40,6 +40,16 @@ def test_fragment_smiles_ignores_stereochemistry_crossing_bead_boundary():
     assert bead_smi == "C=CC"
 
 
+def test_cobalt_symbol_is_not_mistaken_for_aromatic_oxygen():
+    mol = Chem.MolFromSmiles("N#[C][Co+]")
+
+    bead_smi, ring_size, frag_size = get_smi([0, 1, 2], mol)
+
+    assert bead_smi == "N#[C][Co+]"
+    assert ring_size == 0
+    assert frag_size == 0
+
+
 def test_ring_fragment_indices_are_recovered_from_atom_maps():
     mol = Chem.MolFromSmiles(BRL1_156)
     matched_maps, _ = get_smarts_matches(mol)

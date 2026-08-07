@@ -815,6 +815,8 @@ def get_smi(bead,mol):
     lc = re.compile('[cn([nH\\])os]+')
     lc = string_lst = ['c','\\[nH\\]','(?<!\\[)n','o']
     lowerlist = re.findall(r"(?=("+'|'.join(string_lst)+r"))",bead_smi)
+    if not any(mol_for_smi.GetAtomWithIdx(int(i)).GetIsAromatic() for i in bead):
+        lowerlist = []
 
     logger.debug(f'lowerlist: {lowerlist}')
     
@@ -1066,7 +1068,7 @@ def param_bead(beads,bead,bead_smi,ring_size,frag_size,ring,qbead,don,acc,DG_dat
                 alogps = DG_data[bead_smi]['DG']
             except:
                 #If not on list, get from server or Wildmann-Crippen
-                print('{} not on list'.format(bead_smi))
+                # print('{} not on list'.format(bead_smi))
                 alogps = get_alogps(bead_smi)
 
         #Get difference between fragment DG_OW and all beads
@@ -1094,7 +1096,7 @@ def get_alogps(bead_smi):
     except:
         logger.debug("ALOGPS Server access failed")
         logK = rdMolDescriptors.CalcCrippenDescriptors(Chem.MolFromSmiles(bead_smi))[0]
-        print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
+        # print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
         return logK*5.74
     if alogps and 'error' not in alogps.lower():
         logger.debug("ALOGPS Server access successful")
@@ -1102,7 +1104,7 @@ def get_alogps(bead_smi):
     else:
         logK = rdMolDescriptors.CalcCrippenDescriptors(Chem.MolFromSmiles(bead_smi))[0]
         logger.debug("ALOGPS Server access failed")
-        print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
+        # print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
     
     return logK*5.74
 
@@ -1663,7 +1665,7 @@ class CGParam:
     def run_pipeline(self, name, mol, path_out = 'output'):
         """ Run full cg_param pipeline. """
 
-        print(path_out)
+        # print(path_out)
 
         self.name = name
         self.mol = mol
@@ -1709,7 +1711,7 @@ class CGParam:
     def run_parameterisation(self):
         """ Bead parameterisation. """
 
-        print("Performing CG Parameterisation:")
+        # print("Performing CG Parameterisation:")
 
         if self.tune:
             logger.debug("Atom tuning is active: beads will be reassessed based on adjacent groups log Kow, rather then just their own fragments log Kow")
@@ -1732,15 +1734,15 @@ class CGParam:
     def calc_coordinates(self):
             #Generate atomistic conformers
         logger.debug("")
-        print("Generating Atomistic Conformers:")
+        # print("Generating Atomistic Conformers:")
         logger.debug("")
 
-        print('Adding hydrogens and optimizing structure.')
+        # print('Adding hydrogens and optimizing structure.')
         self.nconfs = 40 # 200
         self.mol_h = Chem.AddHs(copy.deepcopy(self.mol))
         AllChem.EmbedMultipleConfs(self.mol_h,numConfs=self.nconfs,randomSeed=random.randint(1,1000),useRandomCoords=True)
         AllChem.UFFOptimizeMoleculeConfs(self.mol_h)
-        print(f'n_atoms with hydrogens: {self.mol_h.GetNumAtoms()}')
+        # print(f'n_atoms with hydrogens: {self.mol_h.GetNumAtoms()}')
 
         self.coords0 = get_coords(self.mol_h,self.beads)
 
