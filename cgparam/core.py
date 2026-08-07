@@ -198,6 +198,12 @@ def lone_atom(ties,A,A_init,scores,ring_beads,matched_maps,comp,exclusion_list):
                         bonded_sorted = np.delete(bonded_sorted,j)
                         bonded_scores = np.delete(bonded_scores,j)
 
+                if bonded_sorted.size == 0:
+                    raise RuntimeError(
+                        f"Atom group {comp[node]} cannot be contracted without "
+                        "modifying a protected SMARTS mapping."
+                    )
+
                 # Bonded in AA rep
                 aa_connects = A_init[comp[node][0]]
                 aa_bonded = [i for i in np.nonzero(aa_connects)[0]]
@@ -316,11 +322,41 @@ def spectral_grouping(ties,A,scores,ring_beads,comp,path_matrix,max_size,matched
                 for x in k:
                     new_nodes.append([x])
         groups = groups + new_nodes
-    groups,ring_beads,matched_maps = process_rings(ring_beads,matched_maps,groups)# Tidy up ring-specific things
+    # Reconcile fixed SMARTS mappings with the ring partition.
+    groups,ring_beads,matched_maps = process_rings(
+        ring_beads, matched_maps, groups, A
+    )
 
     return groups,ring_beads,matched_maps
 
-def process_rings(ring_beads,matched_maps,groups):
+def process_rings(ring_beads,matched_maps,groups,A):
+
+    # SMARTS mappings are fixed beads. Remove their atoms from overlapping ring
+    # beads before adding either set to the partition; otherwise a fixed match
+    # can be expanded by a ring bead while incorrectly retaining its preset type.
+    matched_atoms = set(itertools.chain.from_iterable(matched_maps))
+    resolved_ring_beads = []
+    for bead in ring_beads:
+        remaining = [atom for atom in bead if atom not in matched_atoms]
+        unseen = set(remaining)
+        while unseen:
+            start = min(unseen)
+            unseen.remove(start)
+            component = [start]
+            pending = [start]
+            while pending:
+                node = pending.pop()
+                neighbours = {
+                    int(i) for i in np.nonzero(A[node])[0]
+                    if int(i) != node
+                }
+                connected = unseen.intersection(neighbours)
+                unseen.difference_update(connected)
+                pending.extend(sorted(connected, reverse=True))
+                component.extend(sorted(connected))
+            resolved_ring_beads.append(component)
+
+    ring_beads = resolved_ring_beads
 
     # If ring-bead not already in a bead, add as its own bead
     for bead in ring_beads:
@@ -358,7 +394,7 @@ def process_rings(ring_beads,matched_maps,groups):
                 new_ring_beads.append([k])
                 break
         for p in range(len(matched_maps)):
-            if any(a in matched_maps[p] for a in group):
+            if set(group) == set(matched_maps[p]):
                 new_matched_maps.append([k])
                 break
 
@@ -490,7 +526,7 @@ def group_rings(A,ring_atoms,matched_maps,moli):
             logger.debug(    "Mapping Branch: ", "\033[38;5;34m", frag, "\033[0;0m")
             logger.debug(" ")
             #Do mapping for each continuous fragment
-            indices = [unmapped[k] for k in frag]
+            indices = [unm_mol.GetAtomWithIdx(k).GetAtomMapNum() for k in frag]
 
             frag_smi = Chem.rdmolfiles.MolFragmentToSmiles(moli,indices,canonical=False)
             frag_smi = frag_smi.upper()
@@ -764,7 +800,12 @@ def get_hbonding(mol,beads):
 def get_smi(bead,mol):
     #gets fragment smiles from list of atoms
 
-    bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead)
+    # Fragment stereochemistry can refer to atoms outside the selected bead,
+    # which RDKit cannot always canonicalise. Bead typing depends only on the
+    # fragment constitution, so use a stereochemistry-free copy throughout.
+    mol_for_smi = Chem.Mol(mol)
+    Chem.RemoveStereochemistry(mol_for_smi)
+    bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol_for_smi,bead)
 
     logger.debug("Bead Atoms and Smiles: ","\033[38;5;34m",bead,"\033[0;0m",bead_smi)
 
@@ -789,7 +830,7 @@ def get_smi(bead,mol):
             try:
                 bead_smi = 'c1c{}{}{}{}cc1'.format(lowerlist[0],subs[0],lowerlist[1],subs[1])
             except:
-                bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead,kekuleSmiles=True)
+                bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol_for_smi,bead,kekuleSmiles=True)
             ring_size = 6
             if not Chem.MolFromSmiles(bead_smi): #If fragment isn't kekulisable use 5-membered ring
                 bead_smi = 'c1c{}{}{}{}c1'.format(lowerlist[0],subs[0],lowerlist[1],subs[1])
@@ -809,7 +850,7 @@ def get_smi(bead,mol):
                 bead_smi = 'c1c{}{}{}{}{}{}c1'.format(lowerlist[0],subs[0],lowerlist[1],subs[1],lowerlist[2],subs[2])
                 logger.debug(f'bead_smi: {bead_smi}')      
             except:
-                bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead,kekuleSmiles=True)
+                bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol_for_smi,bead,kekuleSmiles=True)
 
             ring_size = 6
             if not Chem.MolFromSmiles(bead_smi):
@@ -818,7 +859,7 @@ def get_smi(bead,mol):
             logger.debug(f'bead_smi: {bead_smi}')
 
     if not Chem.MolFromSmiles(bead_smi):
-        bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead,kekuleSmiles=True)
+        bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol_for_smi,bead,kekuleSmiles=True)
         bead_smi=bead_smi.replace(":","") #MolFragmentToSmiles with kekuleSMILES sometimes returns fragments with ':', even when fragments are contiguous. This removes that
         ring_size = 0
         frag_size = 0
@@ -1553,42 +1594,38 @@ def get_smarts_matches(mol):
 
     matched_maps = []
     matched_beads = []
-    
-    already_matched=[]
+    matched_atoms = set()
+    A_atom = np.asarray(Chem.GetAdjacencyMatrix(mol),dtype='f')
     
     for smarts in smarts_strings:
         matches = mol.GetSubstructMatches(Chem.MolFromSmarts(smarts))
         
-        for match in matches:            
-            #Generate temp adjacency matrix
-            A_atom = np.asarray(Chem.GetAdjacencyMatrix(mol),dtype='f')
-            #Check matched row for bonded groups. Discard those within the matched group and identify if lone atoms are created
-            # bonded_groups=[]
-            already_matched.append(match)
-            lone=False            
-            for row in match:
-                for i,element in enumerate(A_atom[row]):   #Take matched map row and identify other atoms the atom is bonded to (element in row)
-                    if element!=0 and i not in match:
-                        #For atoms adjactent to match atoms, identify if it has any other bonds
-                        count=0
-                        for x,adj in enumerate(A_atom[i]):
-                            #Subloop to check if any adjacent atom is in a manually mapped group
-                            matched=False
-                            for y in already_matched:
-                                if x in y:
-                                    matched=True
-                            if adj!=0 and not matched:
-                                count+=1
-                        if count ==0:
-                            print("Matched Map leaves lone atom: Number",i, "Discarding")
-                            lone=True
-                            continue                        
-            #If no lone atom is created, allow mapping. On first iteration, loop will allow mappings that might prevent furhter mappings of neighbouring functional groups, be aware!
-            if not lone:
-                logger.debug("Hard Coded fragement recognised: ", smarts)
-                matched_maps.append(list(match))
-                matched_beads.append(smarts_strings[smarts])
-                already_matched.append(match)
+        for match in matches:
+            match_atoms = set(match)
+            if match_atoms.intersection(matched_atoms):
+                continue
+
+            tentative_matched = matched_atoms.union(match_atoms)
+            stranded = []
+            for atom in range(mol.GetNumAtoms()):
+                if atom in tentative_matched:
+                    continue
+                neighbours = set(np.nonzero(A_atom[atom])[0])
+                if neighbours and neighbours.issubset(tentative_matched):
+                    stranded.append(atom)
+
+            if stranded:
+                logger.debug(
+                    "Discarding hard-coded fragment %s because it strands atoms %s",
+                    smarts,
+                    stranded,
+                )
+                continue
+
+            logger.debug("Hard-coded fragment recognised: %s", smarts)
+            matched_maps.append(list(match))
+            matched_beads.append(smarts_strings[smarts])
+            matched_atoms.update(match_atoms)
     return matched_maps,matched_beads
 
 def tune_bead(mol,var_bead,var_type,fix_bead,fix_type):
