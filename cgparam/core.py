@@ -22,7 +22,7 @@ from rdkit.Chem import (
     rdMolDescriptors,
 )
 from scipy.sparse.csgraph import floyd_warshall
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, Delaunay
 
 pkg_base = resources.files('cgparam')
 ROOT_CGPARAM_DATA = Path(f'{pkg_base}/data')
@@ -1221,52 +1221,27 @@ def get_virtual_sites(ring,coords,A_cg):
     return real_sites,vs_weights
 
 def construct_vs(vs,real_sites,coords_p,ring):
-    #Constructs virtual sites as linear combination of 4 nearest real sites (or 3 if there are only 3)
-    dists = [np.linalg.norm(coords_p[vs]-coords_p[rs]) for rs in real_sites]
-    weights = {}
-    vx,vy = coords_p[vs]
+    # Triangulate the real-site hull and express the virtual site in barycentric
+    # coordinates of the triangle containing it. Choosing the four nearest hull
+    # vertices is not sufficient: on an irregular hull they need not enclose the
+    # virtual site, so the previous inverse-bilinear calculation had no valid root.
+    points = coords_p[np.asarray(real_sites)]
+    triangulation = Delaunay(points)
+    simplex = int(triangulation.find_simplex(coords_p[vs], tol=1.0e-10))
+    if simplex < 0:
+        raise RuntimeError(
+            f"Virtual site {ring[vs]} lies outside the real-site hull."
+        )
 
-    if len(real_sites) >= 4:
-        closest = np.argsort(dists)[:4]
-        vertices = [real_sites[r] for r in range(len(real_sites)) if r in closest]
-        r1x,r1y = coords_p[vertices[0]]
-        r2x,r2y = coords_p[vertices[3]]
-        r3x,r3y = coords_p[vertices[1]]
-        r4x,r4y = coords_p[vertices[2]]
-        tx = r4x + r1x -r3x - r2x
-        ty = r4y + r1y - r3y - r2y
-        c = ((r1y-vy)*(r3x-r1x) - (r1x-vx)*(r3y-r1y))
-        b = (r2y-r1y)*(r3x-r1x) + (r1y-vy)*tx - (r2x-r1x)*(r3y-r1y) - (r1x-vx)*ty
-        a = (r2y-r1y)*tx - (r2x-r1x)*ty
-        roots = np.roots([a,b,c])
+    transform = triangulation.transform[simplex]
+    barycentric = np.dot(transform[:2], coords_p[vs] - transform[2])
+    barycentric = np.append(barycentric, 1.0 - np.sum(barycentric))
+    vertices = triangulation.simplices[simplex]
 
-        for f in roots:
-            if (f >= 0.0 and f <= 1.0) or np.isclose(f,1.0) or np.isclose(f,0.0):
-                f1 = f
-                break
-        f2 = -( (r1x-vx) + f1*(r2x-r1x)) / ( (r3x-r1x) + f1*tx)
-
-        weights = {}
-        weights[ring[vertices[0]]] = (1-f1)*(1-f2)
-        weights[ring[vertices[3]]] = f1*(1-f2)
-        weights[ring[vertices[1]]] = (1-f1)*f2
-        weights[ring[vertices[2]]] = f1*f2
-
-    elif len(real_sites) == 3:
-        vertices = real_sites[:]
-        r1x,r1y = coords_p[vertices[0]]
-        r2x,r2y = coords_p[vertices[1]]
-        r3x,r3y = coords_p[vertices[2]]
-
-        M = np.array([[(r2x-r1x),(r3x-r1x)],[(r2y-r1y),(r3y-r1y)]])
-        B = np.array([(vx-r1x),(vy-r1y)])
-        P = np.linalg.solve(M,B)
-
-        weights[ring[vertices[1]]] = P[0]
-        weights[ring[vertices[2]]] = P[1]
-        weights[ring[vertices[0]]] = 1.0 - P[0] - P[1]
-
-    return weights
+    return {
+        ring[real_sites[vertex]]: float(weight)
+        for vertex, weight in zip(vertices, barycentric, strict=True)
+    }
 
 
 def ring_bonding(real,virtual,A_cg,dihedrals):

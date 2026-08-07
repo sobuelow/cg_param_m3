@@ -1,9 +1,16 @@
 import warnings
 
+import numpy as np
 import pytest
 from rdkit import Chem
 
-from cgparam.core import get_ring_atoms, get_smi, get_smarts_matches, mapping
+from cgparam.core import (
+    construct_vs,
+    get_ring_atoms,
+    get_smi,
+    get_smarts_matches,
+    mapping,
+)
 
 
 BRL1_156 = (
@@ -48,6 +55,28 @@ def test_cobalt_symbol_is_not_mistaken_for_aromatic_oxygen():
     assert bead_smi == "N#[C][Co+]"
     assert ring_size == 0
     assert frag_size == 0
+
+
+def test_virtual_site_uses_a_triangle_that_contains_it():
+    coords = np.array([
+        [1.3355318553000226, -0.5071047045384752],
+        [0.2916803563558019, -0.03379043476737232],
+        [-0.44114520276218416, -0.5079609703372195],
+        [0.6300825914455861, -0.3018676045339098],
+        [-0.15144364817129202, 0.022221557194479512],
+        [1.1765083202520015, 0.6805109746331383],
+        [0.3826002677279928, -0.5635713933532417],
+        [-1.3819687200064654, 0.949529931735302],
+        [0.21430530410227347, 0.010280767627900755],
+    ])
+    real_sites = [6, 0, 5, 7, 2]
+
+    weights = construct_vs(8, real_sites, coords, list(range(len(coords))))
+
+    reconstructed = sum(weight * coords[site] for site, weight in weights.items())
+    assert sum(weights.values()) == pytest.approx(1.0)
+    assert all(weight >= -1.0e-12 for weight in weights.values())
+    assert reconstructed == pytest.approx(coords[8])
 
 
 def test_ring_fragment_indices_are_recovered_from_atom_maps():
