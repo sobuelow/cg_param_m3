@@ -22,9 +22,7 @@ from rdkit.Chem import (
     rdMolDescriptors,
 )
 from scipy.sparse.csgraph import floyd_warshall
-from scipy.spatial import ConvexHull
-
-import matplotlib.pyplot as plt
+from scipy.spatial import ConvexHull, Delaunay
 
 pkg_base = resources.files('cgparam')
 ROOT_CGPARAM_DATA = Path(f'{pkg_base}/data')
@@ -200,6 +198,12 @@ def lone_atom(ties,A,A_init,scores,ring_beads,matched_maps,comp,exclusion_list):
                         bonded_sorted = np.delete(bonded_sorted,j)
                         bonded_scores = np.delete(bonded_scores,j)
 
+                if bonded_sorted.size == 0:
+                    raise RuntimeError(
+                        f"Atom group {comp[node]} cannot be contracted without "
+                        "modifying a protected SMARTS mapping."
+                    )
+
                 # Bonded in AA rep
                 aa_connects = A_init[comp[node][0]]
                 aa_bonded = [i for i in np.nonzero(aa_connects)[0]]
@@ -318,11 +322,41 @@ def spectral_grouping(ties,A,scores,ring_beads,comp,path_matrix,max_size,matched
                 for x in k:
                     new_nodes.append([x])
         groups = groups + new_nodes
-    groups,ring_beads,matched_maps = process_rings(ring_beads,matched_maps,groups)# Tidy up ring-specific things
+    # Reconcile fixed SMARTS mappings with the ring partition.
+    groups,ring_beads,matched_maps = process_rings(
+        ring_beads, matched_maps, groups, A
+    )
 
     return groups,ring_beads,matched_maps
 
-def process_rings(ring_beads,matched_maps,groups):
+def process_rings(ring_beads,matched_maps,groups,A):
+
+    # SMARTS mappings are fixed beads. Remove their atoms from overlapping ring
+    # beads before adding either set to the partition; otherwise a fixed match
+    # can be expanded by a ring bead while incorrectly retaining its preset type.
+    matched_atoms = set(itertools.chain.from_iterable(matched_maps))
+    resolved_ring_beads = []
+    for bead in ring_beads:
+        remaining = [atom for atom in bead if atom not in matched_atoms]
+        unseen = set(remaining)
+        while unseen:
+            start = min(unseen)
+            unseen.remove(start)
+            component = [start]
+            pending = [start]
+            while pending:
+                node = pending.pop()
+                neighbours = {
+                    int(i) for i in np.nonzero(A[node])[0]
+                    if int(i) != node
+                }
+                connected = unseen.intersection(neighbours)
+                unseen.difference_update(connected)
+                pending.extend(sorted(connected, reverse=True))
+                component.extend(sorted(connected))
+            resolved_ring_beads.append(component)
+
+    ring_beads = resolved_ring_beads
 
     # If ring-bead not already in a bead, add as its own bead
     for bead in ring_beads:
@@ -360,24 +394,35 @@ def process_rings(ring_beads,matched_maps,groups):
                 new_ring_beads.append([k])
                 break
         for p in range(len(matched_maps)):
-            if any(a in matched_maps[p] for a in group):
+            if set(group) == set(matched_maps[p]):
                 new_matched_maps.append([k])
                 break
 
     return groups,new_ring_beads,new_matched_maps
 
-def new_connectivity(groups,oldA):
+# def new_connectivity(groups,oldA):
+#     # Get A matrix for new mapping
+#     newA = np.zeros((len(groups),len(groups)),dtype=int)
+#     for i,gi in enumerate(groups):
+#         for j,gj in enumerate(groups[i+1:]):
+#             for k in gi:
+#                 for l in gj:
+#                     if oldA[k,l] == 1:
+#                         newA[i,i+j+1] = 1
+#                         newA[i+j+1,i] = 1
+#                 if newA[i,i+j+1] == 1:
+#                     break
+
+#     return newA
+
+def new_connectivity(groups, oldA):
     # Get A matrix for new mapping
-    newA = np.zeros((len(groups),len(groups)),dtype=int)
-    for i,gi in enumerate(groups):
-        for j,gj in enumerate(groups[i+1:]):
-            for k in gi:
-                for l in gj:
-                    if oldA[k,l] == 1:
-                        newA[i,i+j+1] = 1
-                        newA[i+j+1,i] = 1
-                if newA[i,i+j+1] == 1:
-                    break
+    newA = np.zeros((len(groups), len(groups)), dtype=int)
+    for i, gi in enumerate(groups):
+        for j, gj in enumerate(groups[i+1:], start=i+1):
+            if oldA[np.ix_(gi, gj)].any():
+                newA[i, j] = 1
+                newA[j, i] = 1
 
     return newA
 
@@ -481,26 +526,35 @@ def group_rings(A,ring_atoms,matched_maps,moli):
             logger.debug(    "Mapping Branch: ", "\033[38;5;34m", frag, "\033[0;0m")
             logger.debug(" ")
             #Do mapping for each continuous fragment
-            indices = [unmapped[k] for k in frag]
+            indices = [unm_mol.GetAtomWithIdx(k).GetAtomMapNum() for k in frag]
 
-            frag_smi = Chem.rdmolfiles.MolFragmentToSmiles(moli,unmapped).split(".")[0] #Split to ensure identical groups are handled separately
+            frag_smi = Chem.rdmolfiles.MolFragmentToSmiles(moli,indices,canonical=False)
             frag_smi = frag_smi.upper()
-            frag_mol = Chem.MolFromSmiles(frag_smi) 
+            frag_mol = Chem.MolFromSmiles(frag_smi)
             A_frag = np.asarray(Chem.GetAdjacencyMatrix(frag_mol))
 
-            #Assign atom map so that subfrags can be reassigned. 
+            # Keep the parent indices before renumbering the fragment, and
+            # translate any matched groups that are wholly inside it.
+            core_map = [atom.GetAtomMapNum() for atom in frag_mol.GetAtoms()]
+            local_indices = {parent: local for local, parent in enumerate(core_map)}
+            frag_matched_maps = [
+                [local_indices[atom] for atom in match]
+                for match in matched_maps
+                if all(atom in local_indices for atom in match)
+            ]
+
+            #Assign atom map so that subfrags can be reassigned.
             assign_atom_maps(frag_mol)
-            #Find atom map assignments (could also call using mol.GetAtomIDx) to allow backmapping for fragment. Add 0 if relevant, as this is not printed in the SMILES by defualt
-            core_map=re.findall(r"\:([^\]]*)\]",frag_smi)
-            if len(core_map) != len(indices):
-                core_map.insert(0,0)
 
             #Check if there are complete rings within unmapped fragments
             frag_ring_atoms = get_ring_atoms(frag_mol)
             
             #print("frag_ring_atoms",frag_ring_atoms)
-            if frag_ring_atoms:
-                new_beads = group_rings(A_frag,frag_ring_atoms,matched_maps,frag_mol)[1]
+            # Recurse only when extracting the fragment reduced the problem.
+            # Ring systems without a supported edge pattern otherwise produce
+            # the same fragment indefinitely.
+            if frag_ring_atoms and frag_mol.GetNumAtoms() < moli.GetNumAtoms():
+                new_beads = group_rings(A_frag,frag_ring_atoms,frag_matched_maps,frag_mol)[1]
             else:
                 new_beads = []
             frag_ring_beads = new_beads[:]
@@ -512,14 +566,14 @@ def group_rings(A,ring_atoms,matched_maps,moli):
                 A_fragw = include_weights(A_frag,w_frag)
                 scores,ties = rank_nodes(A_fragw)
                 comp = [[i] for i in range(frag_mol.GetNumAtoms())]            
-                new_beads.extend(spectral_grouping(ties,A_frag,scores,frag_ring_beads,comp,path_frag,2,matched_maps)[0])
+                new_beads.extend(spectral_grouping(ties,A_frag,scores,frag_ring_beads,comp,path_frag,2,frag_matched_maps)[0])
             
 
             for bead in new_beads:
 
-                if matched_maps:
+                if frag_matched_maps:
                     match=False
-                    for i in matched_maps:
+                    for i in frag_matched_maps:
                         sorted_match=sorted(i)
                         sorted_bead=sorted(bead)
                         if sorted_match ==sorted_bead:
@@ -596,14 +650,16 @@ def path_contraction(last_iter,postprocess,A_init,w_init,ring_beads,matched_maps
 def get_size(comp,path_matrix):
     
     # Find longest path between atoms in bead
-    longpath = 0
-    for i in comp:
-        for j in comp:
-            path = path_matrix[i,j]
-            if path > longpath:
-                    longpath = path
+    # longpath = 0
+    # for i in comp:
+    #     for j in comp:
+    #         path = path_matrix[i,j]
+    #         if path > longpath:
+    #                 longpath = path
+    # return longpath
 
-    return longpath
+    return np.max(path_matrix[np.ix_(comp, comp)])
+
 
 def get_avgmass(comp,masses):
     #Average atomic mass of heavy atoms in bead
@@ -744,7 +800,12 @@ def get_hbonding(mol,beads):
 def get_smi(bead,mol):
     #gets fragment smiles from list of atoms
 
-    bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead)
+    # Fragment stereochemistry can refer to atoms outside the selected bead,
+    # which RDKit cannot always canonicalise. Bead typing depends only on the
+    # fragment constitution, so use a stereochemistry-free copy throughout.
+    mol_for_smi = Chem.Mol(mol)
+    Chem.RemoveStereochemistry(mol_for_smi)
+    bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol_for_smi,bead)
 
     logger.debug("Bead Atoms and Smiles: ","\033[38;5;34m",bead,"\033[0;0m",bead_smi)
 
@@ -754,6 +815,8 @@ def get_smi(bead,mol):
     lc = re.compile('[cn([nH\\])os]+')
     lc = string_lst = ['c','\\[nH\\]','(?<!\\[)n','o']
     lowerlist = re.findall(r"(?=("+'|'.join(string_lst)+r"))",bead_smi)
+    if not any(mol_for_smi.GetAtomWithIdx(int(i)).GetIsAromatic() for i in bead):
+        lowerlist = []
 
     logger.debug(f'lowerlist: {lowerlist}')
     
@@ -769,7 +832,7 @@ def get_smi(bead,mol):
             try:
                 bead_smi = 'c1c{}{}{}{}cc1'.format(lowerlist[0],subs[0],lowerlist[1],subs[1])
             except:
-                bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead,kekuleSmiles=True)
+                bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol_for_smi,bead,kekuleSmiles=True)
             ring_size = 6
             if not Chem.MolFromSmiles(bead_smi): #If fragment isn't kekulisable use 5-membered ring
                 bead_smi = 'c1c{}{}{}{}c1'.format(lowerlist[0],subs[0],lowerlist[1],subs[1])
@@ -789,7 +852,7 @@ def get_smi(bead,mol):
                 bead_smi = 'c1c{}{}{}{}{}{}c1'.format(lowerlist[0],subs[0],lowerlist[1],subs[1],lowerlist[2],subs[2])
                 logger.debug(f'bead_smi: {bead_smi}')      
             except:
-                bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead,kekuleSmiles=True)
+                bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol_for_smi,bead,kekuleSmiles=True)
 
             ring_size = 6
             if not Chem.MolFromSmiles(bead_smi):
@@ -798,7 +861,7 @@ def get_smi(bead,mol):
             logger.debug(f'bead_smi: {bead_smi}')
 
     if not Chem.MolFromSmiles(bead_smi):
-        bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol,bead,kekuleSmiles=True)
+        bead_smi = Chem.rdmolfiles.MolFragmentToSmiles(mol_for_smi,bead,kekuleSmiles=True)
         bead_smi=bead_smi.replace(":","") #MolFragmentToSmiles with kekuleSMILES sometimes returns fragments with ':', even when fragments are contiguous. This removes that
         ring_size = 0
         frag_size = 0
@@ -996,23 +1059,22 @@ def param_bead(beads,bead,bead_smi,ring_size,frag_size,ring,qbead,don,acc,DG_dat
         prefix = ''
 
     if btype == '':
-        #Parametrise charged beads based on h-bonding behaviour
         if qbead != 0:
-            btype = 'Qx' #placeholder, not a real bead type
-            
+            logK = rdMolDescriptors.CalcCrippenDescriptors(Chem.MolFromSmiles(bead_smi))[0]
+            alogps = logK*5.74
         else:
             try:
                 #Get from list of precalculated fragments
                 alogps = DG_data[bead_smi]['DG']
             except:
                 #If not on list, get from server or Wildmann-Crippen
-                print('{} not on list'.format(bead_smi))
+                # print('{} not on list'.format(bead_smi))
                 alogps = get_alogps(bead_smi)
 
-            #Get difference between fragment DG_OW and all beads
-            diffs = get_diffs(alogps,ring_size,frag_size,category,size)
-            sort_diffs = np.argsort(diffs)
-            btype = types[sort_diffs[0]]
+        #Get difference between fragment DG_OW and all beads
+        diffs = get_diffs(alogps,ring_size,frag_size,category,size)
+        sort_diffs = np.argsort(diffs)
+        btype = types[sort_diffs[0]]
 
         btype = prefix + btype + suffix
     
@@ -1024,19 +1086,25 @@ def get_alogps(bead_smi):
     logger.debug("Generating bead log Kow Values: ")
     try:
         logger.debug("Accessing ALOGPS Webserver....: ")
-        alogps = requests.get('http://vcclab.org/web/alogps/calc?SMILES=' + bead_smi).text
+        response = requests.get(
+            'http://vcclab.org/web/alogps/calc',
+            params={'SMILES': bead_smi},
+            timeout=(1.5, 2),
+        )
+        response.raise_for_status()
+        alogps = response.text.strip()
     except:
         logger.debug("ALOGPS Server access failed")
         logK = rdMolDescriptors.CalcCrippenDescriptors(Chem.MolFromSmiles(bead_smi))[0]
-        print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
+        # print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
         return logK*5.74
-    if 'error' not in alogps:
+    if alogps and 'error' not in alogps.lower():
         logger.debug("ALOGPS Server access successful")
         logK = float(alogps.split()[4])
     else:
         logK = rdMolDescriptors.CalcCrippenDescriptors(Chem.MolFromSmiles(bead_smi))[0]
         logger.debug("ALOGPS Server access failed")
-        print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
+        # print(bead_smi,'Data from Wildmann-Crippen - i.e. Generated from atomic contributions')
     
     return logK*5.74
 
@@ -1153,52 +1221,27 @@ def get_virtual_sites(ring,coords,A_cg):
     return real_sites,vs_weights
 
 def construct_vs(vs,real_sites,coords_p,ring):
-    #Constructs virtual sites as linear combination of 4 nearest real sites (or 3 if there are only 3)
-    dists = [np.linalg.norm(coords_p[vs]-coords_p[rs]) for rs in real_sites]
-    weights = {}
-    vx,vy = coords_p[vs]
+    # Triangulate the real-site hull and express the virtual site in barycentric
+    # coordinates of the triangle containing it. Choosing the four nearest hull
+    # vertices is not sufficient: on an irregular hull they need not enclose the
+    # virtual site, so the previous inverse-bilinear calculation had no valid root.
+    points = coords_p[np.asarray(real_sites)]
+    triangulation = Delaunay(points)
+    simplex = int(triangulation.find_simplex(coords_p[vs], tol=1.0e-10))
+    if simplex < 0:
+        raise RuntimeError(
+            f"Virtual site {ring[vs]} lies outside the real-site hull."
+        )
 
-    if len(real_sites) >= 4:
-        closest = np.argsort(dists)[:4]
-        vertices = [real_sites[r] for r in range(len(real_sites)) if r in closest]
-        r1x,r1y = coords_p[vertices[0]]
-        r2x,r2y = coords_p[vertices[3]]
-        r3x,r3y = coords_p[vertices[1]]
-        r4x,r4y = coords_p[vertices[2]]
-        tx = r4x + r1x -r3x - r2x
-        ty = r4y + r1y - r3y - r2y
-        c = ((r1y-vy)*(r3x-r1x) - (r1x-vx)*(r3y-r1y))
-        b = (r2y-r1y)*(r3x-r1x) + (r1y-vy)*tx - (r2x-r1x)*(r3y-r1y) - (r1x-vx)*ty
-        a = (r2y-r1y)*tx - (r2x-r1x)*ty
-        roots = np.roots([a,b,c])
+    transform = triangulation.transform[simplex]
+    barycentric = np.dot(transform[:2], coords_p[vs] - transform[2])
+    barycentric = np.append(barycentric, 1.0 - np.sum(barycentric))
+    vertices = triangulation.simplices[simplex]
 
-        for f in roots:
-            if (f >= 0.0 and f <= 1.0) or np.isclose(f,1.0) or np.isclose(f,0.0):
-                f1 = f
-                break
-        f2 = -( (r1x-vx) + f1*(r2x-r1x)) / ( (r3x-r1x) + f1*tx)
-
-        weights = {}
-        weights[ring[vertices[0]]] = (1-f1)*(1-f2)
-        weights[ring[vertices[3]]] = f1*(1-f2)
-        weights[ring[vertices[1]]] = (1-f1)*f2
-        weights[ring[vertices[2]]] = f1*f2
-
-    elif len(real_sites) == 3:
-        vertices = real_sites[:]
-        r1x,r1y = coords_p[vertices[0]]
-        r2x,r2y = coords_p[vertices[1]]
-        r3x,r3y = coords_p[vertices[2]]
-
-        M = np.array([[(r2x-r1x),(r3x-r1x)],[(r2y-r1y),(r3y-r1y)]])
-        B = np.array([(vx-r1x),(vy-r1y)])
-        P = np.linalg.solve(M,B)
-
-        weights[ring[vertices[1]]] = P[0]
-        weights[ring[vertices[2]]] = P[1]
-        weights[ring[vertices[0]]] = 1.0 - P[0] - P[1]
-
-    return weights
+    return {
+        ring[real_sites[vertex]]: float(weight)
+        for vertex, weight in zip(vertices, barycentric, strict=True)
+    }
 
 
 def ring_bonding(real,virtual,A_cg,dihedrals):
@@ -1528,42 +1571,38 @@ def get_smarts_matches(mol):
 
     matched_maps = []
     matched_beads = []
-    
-    already_matched=[]
+    matched_atoms = set()
+    A_atom = np.asarray(Chem.GetAdjacencyMatrix(mol),dtype='f')
     
     for smarts in smarts_strings:
         matches = mol.GetSubstructMatches(Chem.MolFromSmarts(smarts))
         
-        for match in matches:            
-            #Generate temp adjacency matrix
-            A_atom = np.asarray(Chem.GetAdjacencyMatrix(mol),dtype='f')
-            #Check matched row for bonded groups. Discard those within the matched group and identify if lone atoms are created
-            # bonded_groups=[]
-            already_matched.append(match)
-            lone=False            
-            for row in match:
-                for i,element in enumerate(A_atom[row]):   #Take matched map row and identify other atoms the atom is bonded to (element in row)
-                    if element!=0 and i not in match:
-                        #For atoms adjactent to match atoms, identify if it has any other bonds
-                        count=0
-                        for x,adj in enumerate(A_atom[i]):
-                            #Subloop to check if any adjacent atom is in a manually mapped group
-                            matched=False
-                            for y in already_matched:
-                                if x in y:
-                                    matched=True
-                            if adj!=0 and not matched:
-                                count+=1
-                        if count ==0:
-                            print("Matched Map leaves lone atom: Number",i, "Discarding")
-                            lone=True
-                            continue                        
-            #If no lone atom is created, allow mapping. On first iteration, loop will allow mappings that might prevent furhter mappings of neighbouring functional groups, be aware!
-            if not lone:
-                logger.debug("Hard Coded fragement recognised: ", smarts)
-                matched_maps.append(list(match))
-                matched_beads.append(smarts_strings[smarts])
-                already_matched.append(match)
+        for match in matches:
+            match_atoms = set(match)
+            if match_atoms.intersection(matched_atoms):
+                continue
+
+            tentative_matched = matched_atoms.union(match_atoms)
+            stranded = []
+            for atom in range(mol.GetNumAtoms()):
+                if atom in tentative_matched:
+                    continue
+                neighbours = set(np.nonzero(A_atom[atom])[0])
+                if neighbours and neighbours.issubset(tentative_matched):
+                    stranded.append(atom)
+
+            if stranded:
+                logger.debug(
+                    "Discarding hard-coded fragment %s because it strands atoms %s",
+                    smarts,
+                    stranded,
+                )
+                continue
+
+            logger.debug("Hard-coded fragment recognised: %s", smarts)
+            matched_maps.append(list(match))
+            matched_beads.append(smarts_strings[smarts])
+            matched_atoms.update(match_atoms)
     return matched_maps,matched_beads
 
 def tune_bead(mol,var_bead,var_type,fix_bead,fix_type):
@@ -1601,7 +1640,7 @@ class CGParam:
     def run_pipeline(self, name, mol, path_out = 'output'):
         """ Run full cg_param pipeline. """
 
-        print(path_out)
+        # print(path_out)
 
         self.name = name
         self.mol = mol
@@ -1647,7 +1686,7 @@ class CGParam:
     def run_parameterisation(self):
         """ Bead parameterisation. """
 
-        print("Performing CG Parameterisation:")
+        # print("Performing CG Parameterisation:")
 
         if self.tune:
             logger.debug("Atom tuning is active: beads will be reassessed based on adjacent groups log Kow, rather then just their own fragments log Kow")
@@ -1670,15 +1709,15 @@ class CGParam:
     def calc_coordinates(self):
             #Generate atomistic conformers
         logger.debug("")
-        print("Generating Atomistic Conformers:")
+        # print("Generating Atomistic Conformers:")
         logger.debug("")
 
-        print('Adding hydrogens and optimizing structure.')
-        self.nconfs = 200
+        # print('Adding hydrogens and optimizing structure.')
+        self.nconfs = 40 # 200
         self.mol_h = Chem.AddHs(copy.deepcopy(self.mol))
         AllChem.EmbedMultipleConfs(self.mol_h,numConfs=self.nconfs,randomSeed=random.randint(1,1000),useRandomCoords=True)
         AllChem.UFFOptimizeMoleculeConfs(self.mol_h)
-        print(f'n_atoms with hydrogens: {self.mol_h.GetNumAtoms()}')
+        # print(f'n_atoms with hydrogens: {self.mol_h.GetNumAtoms()}')
 
         self.coords0 = get_coords(self.mol_h,self.beads)
 
@@ -1688,12 +1727,12 @@ class CGParam:
         AllChem.Compute2DCoords(self.mol_2d)
         self.coords2d = get_coords(self.mol_2d, self.beads)
 
-        print(self.beads)
+        # print(self.beads)
 
         self.bead_sigmas = np.array([bead_to_sigma(bead) for bead in self.bead_types])
-        print(self.bead_types)
-        print(self.bead_sigmas)
-        print(self.charges)
+        # print(self.bead_types)
+        # print(self.bead_sigmas)
+        # print(self.charges)
 
         self.draw_overlay()
 
@@ -1882,7 +1921,7 @@ def get_bead_color(bead_type, q):
     elif 'P' in bead_type:
         color = 'purple'
     elif 'Q' in bead_type:
-        print(q)
+        # print(q)
         if q > 0:
             color = 'blue'
         else:
